@@ -19,6 +19,7 @@ The format is based on Keep a Changelog, and this project currently tracks chang
 
 ### Fixed
 
+- Shell-escape `$ARGUMENTS` substitution in command hooks to prevent shell injection from payload values containing metacharacters like `$(...)` or backticks.
 - Memory scanner now parses YAML frontmatter (`name`, `description`, `type`) instead of returning raw `---` as description.
 - Memory search matches against body content in addition to metadata, with metadata weighted higher for relevance.
 - Memory search tokenizer handles Han characters for multilingual queries.
