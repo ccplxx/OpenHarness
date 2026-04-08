@@ -279,6 +279,13 @@ async def start_runtime(bundle: RuntimeBundle) -> None:
 
 async def close_runtime(bundle: RuntimeBundle) -> None:
     """Close runtime-owned resources."""
+    # Extract local environment rules from session before closing
+    try:
+        from openharness.personalization.session_hook import update_rules_from_session
+        update_rules_from_session(bundle.engine.messages)
+    except Exception:
+        pass  # personalization is best-effort, never block session end
+
     await bundle.mcp_manager.close()
     await bundle.hook_executor.execute(
         HookEvent.SESSION_END,
