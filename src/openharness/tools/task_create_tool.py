@@ -1,4 +1,11 @@
-"""Tool for creating background tasks."""
+"""后台任务创建工具。
+
+本模块提供 TaskCreateTool，用于创建后台任务。支持两种任务类型：
+- local_bash：本地 Shell 命令任务，需提供 command 参数
+- local_agent：本地代理任务，需提供 prompt 参数
+
+创建的任务由 BackgroundTaskManager 管理，可通过 task 系列工具查询和控制。
+"""
 
 from __future__ import annotations
 
@@ -11,7 +18,15 @@ from openharness.tools.base import BaseTool, ToolExecutionContext, ToolResult
 
 
 class TaskCreateToolInput(BaseModel):
-    """Arguments for task creation."""
+    """后台任务创建工具的输入参数。
+
+    Attributes:
+        type: 任务类型：local_bash 或 local_agent，默认 local_bash
+        description: 任务简短描述
+        command: Shell 命令（local_bash 类型必需）
+        prompt: 代理提示词（local_agent 类型必需）
+        model: 可选的模型名称覆盖
+    """
 
     type: str = Field(default="local_bash", description="Task type: local_bash or local_agent")
     description: str = Field(description="Short task description")
@@ -21,13 +36,27 @@ class TaskCreateToolInput(BaseModel):
 
 
 class TaskCreateTool(BaseTool):
-    """Create a background task."""
+    """创建后台任务的工具。
+
+    支持 Shell 命令任务和本地代理任务两种类型。
+    """
 
     name = "task_create"
     description = "Create a background shell or local-agent task."
     input_model = TaskCreateToolInput
 
     async def execute(self, arguments: TaskCreateToolInput, context: ToolExecutionContext) -> ToolResult:
+        """执行后台任务创建。
+
+        根据任务类型调用不同的 TaskManager 方法创建任务。
+
+        Args:
+            arguments: 包含任务类型、描述和命令/提示词的输入参数
+            context: 工具执行上下文
+
+        Returns:
+            创建的任务 ID 和类型信息
+        """
         manager = get_task_manager()
         if arguments.type == "local_bash":
             if not arguments.command:

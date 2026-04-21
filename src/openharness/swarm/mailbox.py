@@ -1,9 +1,9 @@
-"""File-based async message queue for leader-worker communication in OpenHarness swarms.
+"""Swarm 团队基于文件的异步消息队列模块。
 
-Each message is stored as an individual JSON file:
+每条消息以独立 JSON 文件存储：
     ~/.openharness/teams/<team>/agents/<agent_id>/inbox/<timestamp>_<message_id>.json
 
-Atomic writes use a .tmp file followed by os.rename to prevent partial reads.
+原子写入使用 ``.tmp`` 临时文件 + ``os.rename`` 防止部分读取。
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ MessageType = Literal[
 
 @dataclass
 class MailboxMessage:
-    """A single message exchanged between swarm agents."""
+    """Swarm 智能体间交换的单条消息。"""
 
     id: str
     type: MessageType
@@ -52,6 +52,11 @@ class MailboxMessage:
     # ------------------------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
+        """将消息序列化为字典，用于 JSON 持久化。
+
+        Returns:
+            包含 id、type、sender、recipient、payload、timestamp、read 的字典。
+        """
         return {
             "id": self.id,
             "type": self.type,
@@ -64,6 +69,14 @@ class MailboxMessage:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MailboxMessage":
+        """从字典反序列化构建 MailboxMessage 实例。
+
+        Args:
+            data: 包含消息字段的字典，需包含 id、type、sender、recipient、timestamp。
+
+        Returns:
+            反序列化后的 :class:`MailboxMessage` 实例。
+        """
         return cls(
             id=data["id"],
             type=data["type"],
@@ -81,14 +94,14 @@ class MailboxMessage:
 
 
 def get_team_dir(team_name: str) -> Path:
-    """Return ~/.openharness/teams/<team_name>/"""
+    """返回团队目录路径 ``~/.openharness/teams/<team_name>/``，不存在则创建。"""
     base = Path.home() / ".openharness" / "teams" / team_name
     base.mkdir(parents=True, exist_ok=True)
     return base
 
 
 def get_agent_mailbox_dir(team_name: str, agent_id: str) -> Path:
-    """Return ~/.openharness/teams/<team_name>/agents/<agent_id>/inbox/"""
+    """返回智能体收件箱目录 ``~/.openharness/teams/<team_name>/agents/<agent_id>/inbox/``，不存在则创建。"""
     inbox = get_team_dir(team_name) / "agents" / agent_id / "inbox"
     inbox.mkdir(parents=True, exist_ok=True)
     return inbox
@@ -100,15 +113,20 @@ def get_agent_mailbox_dir(team_name: str, agent_id: str) -> Path:
 
 
 class TeammateMailbox:
-    """File-based mailbox for a single agent within a swarm team.
+    """Swarm 团队中单个智能体的基于文件的邮箱。
 
-    Each message lives in its own JSON file named ``<timestamp>_<id>.json``
-    inside the agent's inbox directory.  Writes are atomic: the payload is
-    first written to a ``.tmp`` file, then renamed into place so that readers
-    never see a partial message.
+    每条消息存储为独立的 JSON 文件，命名为 ``<timestamp>_<id>.json``，
+    位于智能体的收件箱目录中。写入操作为原子的：先写入 ``.tmp`` 临时文件，
+    然后重命名到位，确保读取者永远不会看到部分写入的消息。
     """
 
     def __init__(self, team_name: str, agent_id: str) -> None:
+        """初始化邮箱实例。
+
+        Args:
+            team_name: 所属团队名称。
+            agent_id: 智能体标识符。
+        """
         self.team_name = team_name
         self.agent_id = agent_id
 
@@ -117,21 +135,20 @@ class TeammateMailbox:
     # ------------------------------------------------------------------
 
     def get_mailbox_dir(self) -> Path:
-        """Return the inbox directory path, creating it if necessary."""
+        """返回收件箱目录路径，不存在则创建。"""
         return get_agent_mailbox_dir(self.team_name, self.agent_id)
 
     def _lock_path(self) -> Path:
+        """返回邮箱目录的写锁文件路径（``.write_lock``）。"""
         return self.get_mailbox_dir() / ".write_lock"
 
     async def write(self, msg: MailboxMessage) -> None:
-        """Atomically write *msg* to the inbox as a JSON file.
+        """原子性地将 *msg* 以 JSON 文件写入收件箱。
 
-        The file is first written to ``<name>.tmp`` then renamed into the
-        inbox directory so that concurrent readers never observe a partial
-        write.
+        文件先写入 ``<name>.tmp``，然后重命名到收件箱目录，
+        确保并发读取者不会观察到部分写入。
 
-        This method uses a thread pool for the blocking I/O operations and
-        acquires an exclusive lock to prevent concurrent write conflicts.
+        此方法使用线程池执行阻塞 I/O 操作，并获取排他锁防止并发写冲突。
         """
         inbox = self.get_mailbox_dir()
         filename = f"{msg.timestamp:.6f}_{msg.id}.json"
@@ -151,12 +168,11 @@ class TeammateMailbox:
         await loop.run_in_executor(None, _write_atomic)
 
     async def read_all(self, unread_only: bool = True) -> list[MailboxMessage]:
-        """Return messages from the inbox, sorted by timestamp (oldest first).
+        """返回收件箱中的消息，按时间戳排序（最早优先）。
 
         Args:
-            unread_only: When *True* (default) only unread messages are
-                returned.  Pass *False* to retrieve all messages including
-                already-read ones.
+            unread_only: 为 True（默认）时仅返回未读消息；
+                为 False 时返回所有消息（含已读）。
         """
         inbox = self.get_mailbox_dir()
 
@@ -181,7 +197,7 @@ class TeammateMailbox:
         return await loop.run_in_executor(None, _read_all)
 
     async def mark_read(self, message_id: str) -> None:
-        """Mark the message with *message_id* as read (in-place update)."""
+        """将指定 ID 的消息标记为已读（原地更新）。"""
         inbox = self.get_mailbox_dir()
         lock_path = self._lock_path()
 
@@ -209,7 +225,7 @@ class TeammateMailbox:
         await loop.run_in_executor(None, _mark_read)
 
     async def clear(self) -> None:
-        """Remove all message files from the inbox."""
+        """移除收件箱中所有消息文件。"""
         inbox = self.get_mailbox_dir()
         lock_path = self._lock_path()
 
@@ -240,6 +256,17 @@ def _make_message(
     recipient: str,
     payload: dict[str, Any],
 ) -> MailboxMessage:
+    """内部工厂函数：创建带有自动生成 ID 和当前时间戳的 MailboxMessage。
+
+    Args:
+        msg_type: 消息类型字面量。
+        sender: 发送方标识符。
+        recipient: 接收方标识符。
+        payload: 消息载荷字典。
+
+    Returns:
+        新建的 :class:`MailboxMessage` 实例。
+    """
     return MailboxMessage(
         id=str(uuid.uuid4()),
         type=msg_type,
@@ -251,19 +278,19 @@ def _make_message(
 
 
 def create_user_message(sender: str, recipient: str, content: str) -> MailboxMessage:
-    """Create a plain text user message."""
+    """创建纯文本用户消息。"""
     return _make_message("user_message", sender, recipient, {"content": content})
 
 
 def create_shutdown_request(sender: str, recipient: str) -> MailboxMessage:
-    """Create a shutdown request message."""
+    """创建关闭请求消息。"""
     return _make_message("shutdown", sender, recipient, {})
 
 
 def create_idle_notification(
     sender: str, recipient: str, summary: str
 ) -> MailboxMessage:
-    """Create an idle-notification message with a brief summary."""
+    """创建带简短摘要的空闲通知消息。"""
     return _make_message(
         "idle_notification", sender, recipient, {"summary": summary}
     )
@@ -279,16 +306,16 @@ def create_permission_request_message(
     recipient: str,
     request_data: dict[str, Any],
 ) -> MailboxMessage:
-    """Create a permission_request message from worker to leader.
+    """创建从工作者到领导者的权限请求消息。
 
     Args:
-        sender: The sending worker's agent name.
-        recipient: The recipient leader's agent name.
-        request_data: Dict with keys: request_id, agent_id, tool_name,
-            tool_use_id, description, input, permission_suggestions.
+        sender: 发送方工作者的智能体名称。
+        recipient: 接收方领导者的智能体名称。
+        request_data: 包含以下键的字典：request_id、agent_id、tool_name、
+            tool_use_id、description、input、permission_suggestions。
 
     Returns:
-        A :class:`MailboxMessage` of type ``permission_request``.
+        类型为 ``permission_request`` 的 :class:`MailboxMessage`。
     """
     payload: dict[str, Any] = {
         "type": "permission_request",
@@ -308,16 +335,16 @@ def create_permission_response_message(
     recipient: str,
     response_data: dict[str, Any],
 ) -> MailboxMessage:
-    """Create a permission_response message from leader to worker.
+    """创建从领导者到工作者的权限响应消息。
 
     Args:
-        sender: The sending leader's agent name.
-        recipient: The target worker's agent name.
-        response_data: Dict with keys: request_id, subtype ('success'|'error'),
-            error (optional), updated_input (optional), permission_updates (optional).
+        sender: 发送方领导者的智能体名称。
+        recipient: 接收方工作者的智能体名称。
+        response_data: 包含以下键的字典：request_id、subtype（'success'|'error'）、
+            error（可选）、updated_input（可选）、permission_updates（可选）。
 
     Returns:
-        A :class:`MailboxMessage` of type ``permission_response``.
+        类型为 ``permission_response`` 的 :class:`MailboxMessage`。
     """
     subtype = response_data.get("subtype", "success")
     if subtype == "error":
@@ -345,16 +372,16 @@ def create_sandbox_permission_request_message(
     recipient: str,
     request_data: dict[str, Any],
 ) -> MailboxMessage:
-    """Create a sandbox_permission_request message from worker to leader.
+    """创建从工作者到领导者的沙箱权限请求消息。
 
     Args:
-        sender: The sending worker's agent name.
-        recipient: The recipient leader's agent name.
-        request_data: Dict with keys: requestId, workerId, workerName,
-            workerColor (optional), host.
+        sender: 发送方工作者的智能体名称。
+        recipient: 接收方领导者的智能体名称。
+        request_data: 包含以下键的字典：requestId、workerId、workerName、
+            workerColor（可选）、host。
 
     Returns:
-        A :class:`MailboxMessage` of type ``sandbox_permission_request``.
+        类型为 ``sandbox_permission_request`` 的 :class:`MailboxMessage`。
     """
     payload: dict[str, Any] = {
         "type": "sandbox_permission_request",
@@ -373,15 +400,15 @@ def create_sandbox_permission_response_message(
     recipient: str,
     response_data: dict[str, Any],
 ) -> MailboxMessage:
-    """Create a sandbox_permission_response message from leader to worker.
+    """创建从领导者到工作者的沙箱权限响应消息。
 
     Args:
-        sender: The sending leader's agent name.
-        recipient: The target worker's agent name.
-        response_data: Dict with keys: requestId, host, allow.
+        sender: 发送方领导者的智能体名称。
+        recipient: 接收方工作者的智能体名称。
+        response_data: 包含以下键的字典：requestId、host、allow。
 
     Returns:
-        A :class:`MailboxMessage` of type ``sandbox_permission_response``.
+        类型为 ``sandbox_permission_response`` 的 :class:`MailboxMessage`。
     """
     from datetime import datetime, timezone
 
@@ -401,7 +428,10 @@ def create_sandbox_permission_response_message(
 
 
 def is_permission_request(msg: MailboxMessage) -> dict[str, Any] | None:
-    """Return the permission request payload if *msg* is a permission_request, else None."""
+    """若 *msg* 是权限请求消息则返回其载荷字典，否则返回 None。
+
+    同时兼容文本封装消息格式（检查 payload.text 中的 JSON 内容）。
+    """
     if msg.type == "permission_request":
         return msg.payload
     # Also check text field for compatibility with text-envelope messages
@@ -417,7 +447,10 @@ def is_permission_request(msg: MailboxMessage) -> dict[str, Any] | None:
 
 
 def is_permission_response(msg: MailboxMessage) -> dict[str, Any] | None:
-    """Return the permission response payload if *msg* is a permission_response, else None."""
+    """若 *msg* 是权限响应消息则返回其载荷字典，否则返回 None。
+
+    同时兼容文本封装消息格式。
+    """
     if msg.type == "permission_response":
         return msg.payload
     text = msg.payload.get("text", "")
@@ -432,7 +465,10 @@ def is_permission_response(msg: MailboxMessage) -> dict[str, Any] | None:
 
 
 def is_sandbox_permission_request(msg: MailboxMessage) -> dict[str, Any] | None:
-    """Return payload if *msg* is a sandbox_permission_request, else None."""
+    """若 *msg* 是沙箱权限请求消息则返回其载荷字典，否则返回 None。
+
+    同时兼容文本封装消息格式。
+    """
     if msg.type == "sandbox_permission_request":
         return msg.payload
     text = msg.payload.get("text", "")
@@ -447,7 +483,10 @@ def is_sandbox_permission_request(msg: MailboxMessage) -> dict[str, Any] | None:
 
 
 def is_sandbox_permission_response(msg: MailboxMessage) -> dict[str, Any] | None:
-    """Return payload if *msg* is a sandbox_permission_response, else None."""
+    """若 *msg* 是沙箱权限响应消息则返回其载荷字典，否则返回 None。
+
+    同时兼容文本封装消息格式。
+    """
     if msg.type == "sandbox_permission_response":
         return msg.payload
     text = msg.payload.get("text", "")
@@ -471,18 +510,17 @@ async def write_to_mailbox(
     message: dict[str, Any],
     team_name: str | None = None,
 ) -> None:
-    """Write a TeammateMessage-format dict to a recipient's mailbox.
+    """将 TeammateMessage 格式的字典写入接收者的邮箱。
 
-    This mirrors the TS ``writeToMailbox(recipientName, message, teamName)``
-    function.  The *message* dict should have at minimum a ``from`` key and
-    a ``text`` key (the serialised message content), and optionally
-    ``timestamp``, ``color``, and ``summary``.
+    镜像 TS ``writeToMailbox(recipientName, message, teamName)`` 函数。
+    *message* 字典至少应包含 ``from`` 和 ``text`` 键（序列化后的消息内容），
+    可选包含 ``timestamp``、``color`` 和 ``summary``。
 
     Args:
-        recipient_name: The recipient agent's name/id.
-        message: Dict with ``from``, ``text``, and optional fields.
-        team_name: Optional team name; defaults to ``CLAUDE_CODE_TEAM_NAME``
-            env var, then ``"default"``.
+        recipient_name: 接收方智能体的名称/ID。
+        message: 包含 ``from``、``text`` 及可选字段的字典。
+        team_name: 可选团队名称；默认为 ``CLAUDE_CODE_TEAM_NAME`` 环境变量，
+            然后为 ``"default"``。
     """
     team = team_name or os.environ.get("CLAUDE_CODE_TEAM_NAME", "default")
     text = message.get("text", "")

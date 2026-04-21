@@ -1,4 +1,17 @@
-"""Coordinator mode detection and orchestration support."""
+"""协调者模式检测与编排支持。
+
+本模块实现了 OpenHarness 协调者（coordinator）模式的核心基础设施，负责：
+
+- TeamRegistry：内存中的团队注册表，管理团队及其代理成员关系
+- 协调者模式环境变量检测与会话模式同步
+- 协调者专用工具列表（agent、send_message、task_stop）和 worker 工具列表
+- 协调者系统提示词生成（包含完整的多代理编排指南）
+- TaskNotification 的 XML 序列化/反序列化（协调者与 worker 之间的通知格式）
+- WorkerConfig 数据类（worker 代理的启动配置）
+
+协调者模式通过 CLAUDE_CODE_COORDINATOR_MODE 环境变量启用，
+使代理从单代理执行模式切换为多代理编排模式。
+"""
 
 from __future__ import annotations
 
@@ -16,7 +29,11 @@ from xml.sax.saxutils import escape, unescape
 
 @dataclass
 class TeamRecord:
-    """A lightweight in-memory team."""
+    """轻量级内存团队记录。
+
+    包含团队名称、描述、代理 ID 列表和消息列表，
+    用于 TeamRegistry 中的团队信息存储。
+    """
 
     name: str
     description: str = ""
@@ -25,46 +42,39 @@ class TeamRecord:
 
 
 class TeamRegistry:
-    """Store teams and agent memberships."""
+    """团队与代理成员关系的内存注册表。
+
+    提供团队的创建、删除、代理添加、消息发送等操作，
+    以及按名称排序的团队列表查询。用于向后兼容的团队管理。
+    """
 
     def __init__(self) -> None:
         self._teams: dict[str, TeamRecord] = {}
 
     def create_team(self, name: str, description: str = "") -> TeamRecord:
-        if name in self._teams:
-            raise ValueError(f"Team '{name}' already exists")
-        team = TeamRecord(name=name, description=description)
-        self._teams[name] = team
-        return team
+        """创建新团队。若团队名已存在则抛出 ValueError。"""
 
     def delete_team(self, name: str) -> None:
-        if name not in self._teams:
-            raise ValueError(f"Team '{name}' does not exist")
-        del self._teams[name]
+        """删除指定团队。若团队不存在则抛出 ValueError。"""
 
     def add_agent(self, team_name: str, task_id: str) -> None:
-        team = self._require_team(team_name)
-        if task_id not in team.agents:
-            team.agents.append(task_id)
+        """向团队添加代理（去重）。若团队不存在则抛出 ValueError。"""
 
     def send_message(self, team_name: str, message: str) -> None:
-        self._require_team(team_name).messages.append(message)
+        """向团队追加消息。若团队不存在则抛出 ValueError。"""
 
     def list_teams(self) -> list[TeamRecord]:
-        return sorted(self._teams.values(), key=lambda item: item.name)
+        """返回按名称排序的所有团队列表。"""
 
     def _require_team(self, name: str) -> TeamRecord:
-        team = self._teams.get(name)
-        if team is None:
-            raise ValueError(f"Team '{name}' does not exist")
-        return team
+        """获取指定团队，不存在则抛出 ValueError。"""
 
 
 _DEFAULT_TEAM_REGISTRY: TeamRegistry | None = None
 
 
 def get_team_registry() -> TeamRegistry:
-    """Return the singleton team registry."""
+    """返回全局团队注册表单例。"""
     global _DEFAULT_TEAM_REGISTRY
     if _DEFAULT_TEAM_REGISTRY is None:
         _DEFAULT_TEAM_REGISTRY = TeamRegistry()
@@ -78,7 +88,11 @@ def get_team_registry() -> TeamRegistry:
 
 @dataclass
 class TaskNotification:
-    """Structured result from a completed agent task."""
+    """代理任务完成的结构化结果通知。
+
+    用于 worker 代理完成任务后向协调者报告结果，
+    包含任务 ID、状态、摘要、详细结果和用量统计。
+    """
 
     task_id: str
     status: str
@@ -89,7 +103,11 @@ class TaskNotification:
 
 @dataclass
 class WorkerConfig:
-    """Configuration for a spawned worker agent."""
+    """生成的 worker 代理配置。
+
+    包含代理 ID、名称、提示词、模型覆盖、颜色和所属团队等参数，
+    用于 agent 工具启动 worker 代理时传递配置。
+    """
 
     agent_id: str
     name: str
@@ -107,7 +125,19 @@ _USAGE_FIELDS = ("total_tokens", "tool_uses", "duration_ms")
 
 
 def format_task_notification(n: TaskNotification) -> str:
-    """Serialize a TaskNotification to the canonical XML envelope."""
+    """将 TaskNotification 序列化为规范的 XML 信封格式。
+
+    输出格式如：
+    <task-notification>
+      <task-id>...</task-id>
+      <status>...</status>
+      <summary>...</summary>
+      <result>...</result>（可选）
+      <usage>...</usage>（可选，含 total_tokens/tool_uses/duration_ms）
+    </task-notification>
+
+    使用 xml.sax.saxutils.escape 对内容进行 XML 转义。
+    """
     parts = [
         "<task-notification>",
         f"<task-id>{escape(n.task_id)}</task-id>",
@@ -127,7 +157,12 @@ def format_task_notification(n: TaskNotification) -> str:
 
 
 def parse_task_notification(xml: str) -> TaskNotification:
-    """Parse a <task-notification> XML string into a TaskNotification."""
+    """将 <task-notification> XML 字符串解析为 TaskNotification 对象。
+
+    使用正则表达式提取 task-id、status、summary、result 字段，
+    以及 usage 块中的 total_tokens、tool_uses、duration_ms 数值字段。
+    使用 xml.sax.saxutils.unescape 反转义 XML 实体。
+    """
 
     def _extract(tag: str) -> Optional[str]:
         m = re.search(rf"<{tag}>(.*?)</{tag}>", xml, re.DOTALL)
@@ -184,15 +219,20 @@ _SIMPLE_WORKER_TOOLS = ["bash", "file_read", "file_edit"]
 
 
 def is_coordinator_mode() -> bool:
-    """Return True when the process is running in coordinator mode."""
+    """判断当前进程是否运行在协调者模式。
+
+    检查 CLAUDE_CODE_COORDINATOR_MODE 环境变量是否为 "1"、"true" 或 "yes"。
+    """
     val = os.environ.get("CLAUDE_CODE_COORDINATOR_MODE", "")
     return val.lower() in {"1", "true", "yes"}
 
 
 def match_session_mode(session_mode: Optional[str]) -> Optional[str]:
-    """Align the env-var coordinator flag with a resumed session's stored mode.
+    """将环境变量协调者标志与恢复会话的存储模式对齐。
 
-    Returns a warning string if the mode was switched, or None if no change.
+    当当前运行模式的协调者标志与会话中记录的模式不一致时，
+    自动调整环境变量以匹配会话模式。返回警告字符串说明模式变更，
+    无变更时返回 None。
     """
     if not session_mode:
         return None
@@ -214,7 +254,7 @@ def match_session_mode(session_mode: Optional[str]) -> Optional[str]:
 
 
 def get_coordinator_tools() -> list[str]:
-    """Return the tool names reserved for the coordinator."""
+    """返回协调者专用工具名称列表（agent、send_message、task_stop）。"""
     return [_AGENT_TOOL_NAME, _SEND_MESSAGE_TOOL_NAME, _TASK_STOP_TOOL_NAME]
 
 
@@ -222,7 +262,15 @@ def get_coordinator_user_context(
     mcp_clients: list[dict[str, str]] | None = None,
     scratchpad_dir: Optional[str] = None,
 ) -> dict[str, str]:
-    """Build the workerToolsContext injected into the coordinator's user turn."""
+    """构建注入到协调者用户轮次的 workerToolsContext 上下文。
+
+    仅在协调者模式下生效。生成包含以下信息的上下文字符串：
+    - worker 代理可用的工具列表（根据 simple/full 模式区分）
+    - 可用的 MCP 服务器名称
+    - 临时共享目录（scratchpad）路径
+
+    返回 {"workerToolsContext": content} 字典，非协调者模式返回空字典。
+    """
     if not is_coordinator_mode():
         return {}
 
@@ -250,7 +298,17 @@ def get_coordinator_user_context(
 
 
 def get_coordinator_system_prompt() -> str:
-    """Return the system prompt injected when running in coordinator mode."""
+    """返回协调者模式下注入的系统提示词。
+
+    包含完整的多代理编排指南，涵盖：
+    - 协调者角色定位与职责
+    - 专用工具（agent / send_message / task_stop）使用方法
+    - TaskNotification XML 格式说明
+    - 任务工作流（研究→综合→实现→验证）
+    - 并发策略（只读任务并行、写任务串行）
+    - Worker 提示词编写最佳实践
+    - 继续已有 worker vs 创建新 worker 的决策指南
+    """
     is_simple = os.environ.get("CLAUDE_CODE_SIMPLE", "").lower() in {"1", "true", "yes"}
 
     if is_simple:

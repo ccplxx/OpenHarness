@@ -1,8 +1,7 @@
-"""Backwards-compatible re-export of the generic file-lock helpers.
+"""文件锁辅助模块的向后兼容重导出。
 
-The implementation lives in :mod:`openharness.utils.file_lock`. This module
-is retained so existing callers (swarm mailbox, permission sync, external
-plugins) keep working without changes.
+实际实现位于 :mod:`openharness.utils.file_lock`，本模块保留以使现有调用方
+（Swarm 邮箱、权限同步、外部插件）无需修改即可继续使用。
 """
 
 from __future__ import annotations

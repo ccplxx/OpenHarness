@@ -1,4 +1,18 @@
-"""Shared utilities for spawning teammate processes."""
+"""Swarm 智能体子进程生成工具集。
+
+本模块提供生成 Teammate 子进程所需的共享工具函数，包括：
+
+* :func:`get_teammate_command` — 解析用于启动 teammate 进程的可执行命令，
+  优先级：环境变量 > 当前 Python 解释器 > PATH 上的 entry-point。
+* :func:`build_inherited_cli_flags` — 构建需从父会话传播到子进程的 CLI 标志
+  （权限模式、模型覆盖、设置路径、插件目录等），所有值均经 shell 转义以防注入。
+* :func:`build_inherited_env_vars` — 构建需转发给子进程的环境变量字典，
+  包括 API 密钥、代理设置、CA 证书和 OpenHarness 原生配置。
+* :func:`is_tmux_available` / :func:`is_inside_tmux` — tmux 环境检测辅助。
+
+tmux 可能启动一个不继承父进程环境的新 login shell，因此本模块显式转发
+关键环境变量以确保 teammate 进程能正确连接 API 提供方、代理和 CA 证书。
+"""
 
 from __future__ import annotations
 
@@ -68,15 +82,14 @@ _TEAMMATE_ENV_VARS = [
 
 
 def get_teammate_command() -> str:
-    """Return the executable used to spawn teammate processes.
+    """返回用于生成 teammate 进程的可执行命令。
 
-    Resolution order:
-    1. ``OPENHARNESS_TEAMMATE_COMMAND`` environment variable — allows the
-       operator to point at a specific binary or wrapper script.
-    2. The current Python interpreter running the ``openharness`` module.
-       This keeps spawned teammates on the same venv/source tree as the
-       leader process.
-    3. The ``openharness`` entry-point on PATH (installed package fallback).
+    解析优先级：
+    1. ``OPENHARNESS_TEAMMATE_COMMAND`` 环境变量——允许运维人员
+       指向特定的二进制文件或包装脚本。
+    2. 当前运行 ``openharness`` 模块的 Python 解释器。
+       使生成的 teammate 继承与领导者进程相同的 venv/源码树。
+    3. PATH 上的 ``openharness`` entry-point（已安装包的回退）。
     """
     override = os.environ.get(TEAMMATE_COMMAND_ENV_VAR)
     if override:
@@ -103,33 +116,30 @@ def build_inherited_cli_flags(
     plugin_dirs: list[str] | None = None,
     extra_flags: list[str] | None = None,
 ) -> list[str]:
-    """Build CLI flags to propagate from the current session to spawned teammates.
+    """构建需从当前会话传播到生成 teammate 的 CLI 标志。
 
-    Ensures teammates inherit important settings like permission mode, model
-    selection, and plugin configuration from their parent.
+    确保 teammate 继承重要的设置，如权限模式、模型选择和插件配置。
 
-    All flag values are shell-quoted with :func:`shlex.quote` to prevent
-    command injection when the resulting list is later joined into a shell
-    command string.
+    所有标志值通过 :func:`shlex.quote` 进行 shell 转义，防止后续
+    将列表拼接为 shell 命令字符串时的命令注入。
 
     Args:
-        model: Model override to forward (e.g. ``"claude-opus-4-6"``).
-        permission_mode: One of ``"bypassPermissions"``, ``"acceptEdits"``, or None.
-        plan_mode_required: When True, bypass-permissions flag is suppressed
-            (plan mode takes precedence over bypass for safety).
-        settings_path: Path to a settings JSON file to propagate via
-            ``--settings``.  Shell-quoted for safety.
-        teammate_mode: Teammate execution mode (``"auto"``, ``"in_process"``,
-            ``"tmux"``).  Forwarded as ``--teammate-mode`` so tmux teammates
-            use the same mode as the leader.
-        plugin_dirs: List of plugin directory paths.  Each is forwarded as a
-            separate ``--plugin-dir <path>`` flag so inline plugins are
-            visible inside teammate processes.
-        extra_flags: Additional pre-built flag strings to append verbatim.
-            Callers are responsible for quoting any values in these strings.
+        model: 要转发的模型覆盖（如 ``"claude-opus-4-6"``）。
+        permission_mode: ``"bypassPermissions"``、``"acceptEdits"`` 或 None。
+        plan_mode_required: 为 True 时抑制 bypass-permissions 标志
+            （计划模式优先于绕过以确保安全）。
+        settings_path: 通过 ``--settings`` 传播的设置 JSON 文件路径。
+            已 shell 转义以确保安全。
+        teammate_mode: Teammate 执行模式（``"auto"``、``"in_process"``、
+            ``"tmux"``）。作为 ``--teammate-mode`` 转发，使 tmux teammate
+            使用与领导者相同的模式。
+        plugin_dirs: 插件目录路径列表。每个作为独立的
+            ``--plugin-dir <path>`` 标志转发，使内联插件在 teammate 进程中可用。
+        extra_flags: 原样追加的额外预构建标志字符串。
+            调用方负责对其中的值进行转义。
 
     Returns:
-        List of CLI flag strings ready to be passed to :mod:`subprocess`.
+        可传递给 :mod:`subprocess` 的 CLI 标志字符串列表。
     """
     flags: list[str] = []
 
@@ -170,13 +180,13 @@ def build_inherited_cli_flags(
 
 
 def build_inherited_env_vars() -> dict[str, str]:
-    """Build environment variables to forward to spawned teammates.
+    """构建需转发给生成 teammate 的环境变量。
 
-    Always includes ``OPENHARNESS_AGENT_TEAMS=1`` plus any provider/proxy
-    vars that are set in the current process.
+    始终包含 ``OPENHARNESS_AGENT_TEAMS=1``，以及当前进程中
+    已设置的提供方/代理环境变量。
 
     Returns:
-        Dict of env var name → value to merge into the subprocess environment.
+        要合并到子进程环境的环境变量名称 → 值字典。
     """
     env: dict[str, str] = {
         "OPENHARNESS_AGENT_TEAMS": "1",
@@ -194,10 +204,10 @@ def build_inherited_env_vars() -> dict[str, str]:
 
 
 def is_tmux_available() -> bool:
-    """Return True if the ``tmux`` binary is on PATH."""
+    """判断 ``tmux`` 二进制是否在 PATH 上可用。"""
     return shutil.which("tmux") is not None
 
 
 def is_inside_tmux() -> bool:
-    """Return True if the current process is running inside a tmux session."""
+    """判断当前进程是否运行在 tmux 会话内。"""
     return bool(os.environ.get("TMUX"))

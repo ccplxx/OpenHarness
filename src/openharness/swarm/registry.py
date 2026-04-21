@@ -1,4 +1,16 @@
-"""Backend registry for teammate execution."""
+"""Swarm 后端注册表与自动检测模块。
+
+本模块实现 :class:`BackendRegistry`，负责管理所有可用的 TeammateExecutor 后端实例，
+并提供自动检测逻辑以选择最合适的执行后端（tmux / in_process / subprocess）。
+
+检测优先级管道（与 TS 源码 ``registry.ts`` 对齐）：
+1. ``in_process`` — 当显式请求或此前 spawn 失败触发降级时激活。
+2. ``tmux`` — 当进程运行在 tmux 会话内且 tmux 二进制可用时选择。
+3. ``subprocess`` — 始终可用，作为安全回退。
+
+此外提供面板后端（tmux / iTerm2）的检测与安装指引生成功能，
+以及进程级单例 :func:`get_backend_registry` 便于全局访问。
+"""
 
 from __future__ import annotations
 
@@ -23,11 +35,11 @@ logger = logging.getLogger(__name__)
 
 
 def _detect_tmux() -> bool:
-    """Return True if the process is running inside an active tmux session.
+    """判断进程是否运行在活跃的 tmux 会话内。
 
-    Checks:
-    1. ``$TMUX`` environment variable (set by tmux for attached clients).
-    2. The ``tmux`` binary is available on PATH.
+    检查：
+    1. ``$TMUX`` 环境变量（tmux 为已附加的客户端设置）。
+    2. ``tmux`` 二进制文件在 PATH 上可用。
     """
     if not os.environ.get("TMUX"):
         logger.debug("[BackendRegistry] _detect_tmux: $TMUX not set")
@@ -40,9 +52,9 @@ def _detect_tmux() -> bool:
 
 
 def _detect_iterm2() -> bool:
-    """Return True if the process is running inside an iTerm2 terminal.
+    """判断进程是否运行在 iTerm2 终端内。
 
-    Checks ``$ITERM_SESSION_ID`` which iTerm2 sets for every terminal session.
+    检查 ``$ITERM_SESSION_ID``，iTerm2 为每个终端会话设置此变量。
     """
     if os.environ.get("ITERM_SESSION_ID"):
         logger.debug("[BackendRegistry] _detect_iterm2: ITERM_SESSION_ID=%s", os.environ["ITERM_SESSION_ID"])
@@ -52,14 +64,14 @@ def _detect_iterm2() -> bool:
 
 
 def _is_it2_cli_available() -> bool:
-    """Return True if the ``it2`` CLI is installed (used for iTerm2 pane control)."""
+    """判断 ``it2`` CLI 是否已安装（用于 iTerm2 面板控制）。"""
     available = shutil.which("it2") is not None
     logger.debug("[BackendRegistry] _is_it2_cli_available: %s", available)
     return available
 
 
 def _get_tmux_install_instructions() -> str:
-    """Return platform-specific tmux installation instructions."""
+    """返回平台特定的 tmux 安装指引。"""
     system = get_platform()
     if system == "macos":
         return (
@@ -95,21 +107,22 @@ def _get_tmux_install_instructions() -> str:
 
 
 class BackendRegistry:
-    """Registry that maps BackendType names to TeammateExecutor instances.
+    """将 BackendType 名称映射到 TeammateExecutor 实例的注册表。
 
-    Detection priority pipeline (mirrors ``registry.ts``):
-    1. ``in_process`` – when explicitly requested or no pane backend available.
-    2. ``tmux`` – when inside a tmux session and tmux binary present.
-    3. ``subprocess`` – always available as the safe fallback.
+    检测优先级管道（镜像 ``registry.ts``）：
+    1. ``in_process`` — 当显式请求或无面板后端可用时。
+    2. ``tmux`` — 当在 tmux 会话内且 tmux 二进制可用时。
+    3. ``subprocess`` — 始终可用，作为安全回退。
 
-    Usage::
+    用法::
 
         registry = BackendRegistry()
-        executor = registry.get_executor()           # auto-detect best backend
-        executor = registry.get_executor("in_process")  # explicit selection
+        executor = registry.get_executor()           # 自动检测最佳后端
+        executor = registry.get_executor("in_process")  # 显式选择
     """
 
     def __init__(self) -> None:
+        """初始化后端注册表，注册内置默认后端并重置检测缓存。"""
         self._backends: dict[BackendType, TeammateExecutor] = {}
         self._detected: BackendType | None = None
         self._detection_result: BackendDetectionResult | None = None
@@ -121,20 +134,20 @@ class BackendRegistry:
     # ------------------------------------------------------------------
 
     def register_backend(self, executor: TeammateExecutor) -> None:
-        """Register a custom executor under its declared ``type`` key."""
+        """在声明的 ``type`` 键下注册自定义执行器。"""
         self._backends[executor.type] = executor
         logger.debug("Registered backend: %s", executor.type)
 
     def detect_backend(self) -> BackendType:
-        """Detect and cache the most capable available backend.
+        """检测并缓存最强大的可用后端。
 
-        Detection priority:
-        1. ``in_process`` – if in-process fallback was previously activated.
-        2. ``tmux`` – if inside an active tmux session and tmux binary present.
-        3. ``subprocess`` – always available as the safe fallback.
+        检测优先级：
+        1. ``in_process`` — 若此前已激活 in-process 降级。
+        2. ``tmux`` — 若在活跃的 tmux 会话内且 tmux 二进制可用。
+        3. ``subprocess`` — 始终可用，作为安全回退。
 
         Returns:
-            The detected :data:`BackendType` string.
+            检测到的 :data:`BackendType` 字符串。
         """
         if self._detected is not None:
             logger.debug(
@@ -183,23 +196,22 @@ class BackendRegistry:
         return self._detected
 
     def detect_pane_backend(self) -> BackendDetectionResult:
-        """Detect which pane backend (tmux / iTerm2) should be used.
+        """检测应使用哪个面板后端（tmux / iTerm2）。
 
-        Implements the same priority flow as ``detectAndGetBackend()`` in the
-        TypeScript source:
+        实现 TS 源码 ``detectAndGetBackend()`` 相同的优先级流程：
 
-        1. If inside tmux, always use tmux.
-        2. If in iTerm2 with ``it2`` CLI, use iTerm2.
-        3. If in iTerm2 without ``it2`` but tmux available, use tmux.
-        4. If in iTerm2 with no tmux, raise with setup instructions.
-        5. If tmux binary available (external session), use tmux.
-        6. Otherwise raise with platform-specific install instructions.
+        1. 若在 tmux 内，始终使用 tmux。
+        2. 若在 iTerm2 内且有 ``it2`` CLI，使用 iTerm2。
+        3. 若在 iTerm2 内但无 ``it2``，有 tmux 可用，使用 tmux。
+        4. 若在 iTerm2 内且无 tmux，抛出异常并提供安装指引。
+        5. 若 tmux 二进制可用（外部会话），使用 tmux。
+        6. 否则抛出异常并提供平台特定的安装指引。
 
         Returns:
-            :class:`BackendDetectionResult` describing the chosen pane backend.
+            描述所选面板后端的 :class:`BackendDetectionResult`。
 
         Raises:
-            RuntimeError: When no pane backend is available.
+            RuntimeError: 无面板后端可用时。
         """
         logger.debug("[BackendRegistry] Starting pane backend detection...")
 
@@ -268,17 +280,16 @@ class BackendRegistry:
         raise RuntimeError(_get_tmux_install_instructions())
 
     def get_executor(self, backend: BackendType | None = None) -> TeammateExecutor:
-        """Return a TeammateExecutor for the given backend type.
+        """返回指定后端类型的 TeammateExecutor。
 
         Args:
-            backend: Explicit backend type to use. When *None* the registry
-                     auto-detects the best available backend.
+            backend: 显式指定后端类型。为 None 时注册表自动检测最佳可用后端。
 
         Returns:
-            The registered :class:`~openharness.swarm.types.TeammateExecutor`.
+            已注册的 :class:`~openharness.swarm.types.TeammateExecutor`。
 
         Raises:
-            KeyError: If the requested backend has not been registered.
+            KeyError: 请求的后端未注册时。
         """
         resolved = backend or self.detect_backend()
         executor = self._backends.get(resolved)
@@ -290,16 +301,16 @@ class BackendRegistry:
         return executor
 
     def get_preferred_backend(self, config: dict | None = None) -> BackendType:
-        """Return the user-preferred backend from settings / config.
+        """从设置/配置返回用户偏好的后端。
 
-        Falls back to auto-detection when no explicit preference is set.
+        无显式偏好时回退到自动检测。
 
         Args:
-            config: Optional settings dict. Reads ``teammate_mode`` key if
-                    present (values: ``"auto"``, ``"in_process"``, ``"tmux"``).
+            config: 可选设置字典。读取 ``teammate_mode`` 键
+                （值：``"auto"``、``"in_process"``、``"tmux"``）。
 
         Returns:
-            The resolved :data:`BackendType`.
+            解析后的 :data:`BackendType`。
         """
         if config:
             mode = config.get("teammate_mode", "auto")
@@ -317,11 +328,10 @@ class BackendRegistry:
             return self.detect_backend()
 
     def mark_in_process_fallback(self) -> None:
-        """Record that spawn fell back to in-process mode.
+        """记录 spawn 降级到 in-process 模式。
 
-        Called when no pane backend was available. After this,
-        ``get_executor()`` will keep returning the in-process backend for the
-        lifetime of the process (the environment won't change mid-session).
+        当无面板后端可用时调用。此后 ``get_executor()`` 将在进程
+        生命周期内持续返回 in-process 后端（会话期间环境不会变化）。
         """
         logger.debug("[BackendRegistry] Marking in-process fallback as active")
         self._in_process_fallback_active = True
@@ -330,19 +340,19 @@ class BackendRegistry:
         self._detection_result = None
 
     def get_cached_detection_result(self) -> BackendDetectionResult | None:
-        """Return the cached :class:`BackendDetectionResult`, or *None* if not yet detected."""
+        """返回缓存的 :class:`BackendDetectionResult`，若尚未检测则返回 None。"""
         return self._detection_result
 
     def available_backends(self) -> list[BackendType]:
-        """Return sorted list of registered backend types."""
+        """返回已注册后端类型的排序列表。"""
         return sorted(self._backends.keys())  # type: ignore[return-value]
 
     def health_check(self) -> dict[str, Any]:
-        """Check the health of all registered backends.
+        """检查所有已注册后端的健康状况。
 
         Returns:
-            Dict with backend_name -> {available: bool, type: str} mapping,
-            plus a total_count of available backends.
+            包含 backend_name -> {available: bool, type: str} 映射的字典，
+            以及可用后端总数的 total_count。
         """
         results: dict[str, dict[str, Any]] = {}
         available_count = 0
@@ -362,9 +372,9 @@ class BackendRegistry:
         }
 
     def reset(self) -> None:
-        """Clear detection cache and re-register defaults.
+        """清除检测缓存并重新注册默认后端。
 
-        Intended for testing — allows re-detection after env changes.
+        用于测试——允许环境变更后重新检测。
         """
         self._detected = None
         self._detection_result = None
@@ -377,7 +387,12 @@ class BackendRegistry:
     # ------------------------------------------------------------------
 
     def _register_defaults(self) -> None:
-        """Register built-in backends that are unconditionally available."""
+        """注册内置的默认后端实例。
+
+        无条件注册 ``subprocess`` 后端；若平台支持 swarm mailbox，
+        则同时注册 ``in_process`` 后端。Tmux 后端需在外部实现后
+        通过 :meth:`register_backend` 手动注册。
+        """
         from openharness.swarm.subprocess_backend import SubprocessBackend
 
         self._backends["subprocess"] = SubprocessBackend()
@@ -398,7 +413,11 @@ _registry: BackendRegistry | None = None
 
 
 def get_backend_registry() -> BackendRegistry:
-    """Return the process-wide singleton BackendRegistry."""
+    """返回进程级单例 BackendRegistry。
+
+    首次调用时创建实例，后续调用直接返回缓存实例。
+    在多线程环境下非线程安全，但 OpenHarness 主进程为单线程事件循环。
+    """
     global _registry
     if _registry is None:
         _registry = BackendRegistry()
@@ -406,5 +425,9 @@ def get_backend_registry() -> BackendRegistry:
 
 
 def mark_in_process_fallback() -> None:
-    """Module-level convenience: mark in-process fallback on the singleton registry."""
+    """模块级便捷函数：在单例注册表上标记 in-process 降级。
+
+    当 spawn 因无面板后端可用而降级到 in-process 模式时调用，
+    使后续 :meth:`BackendRegistry.get_executor` 调用持续返回 in-process 后端。
+    """
     get_backend_registry().mark_in_process_fallback()

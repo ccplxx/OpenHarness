@@ -1,4 +1,14 @@
-"""Structured protocol models for the React TUI backend."""
+"""React TUI 后端的结构化协议模型。
+
+本模块定义了 Python 后端与 React 终端前端之间的 JSON-lines 通信协议数据模型：
+
+- FrontendRequest：前端发送给后端的请求（提交输入、权限响应、命令选择等）
+- BackendEvent：后端发送给前端的事件（就绪、状态快照、文本增量、工具事件等）
+- TranscriptItem：对话记录条目（用户/助手/工具/系统消息）
+- TaskSnapshot：后台任务的 UI 安全表示
+
+这些模型使用 Pydantic BaseModel 实现，确保协议消息的类型安全与自动验证。
+"""
 
 from __future__ import annotations
 
@@ -13,7 +23,16 @@ from openharness.tasks.types import TaskRecord
 
 
 class FrontendRequest(BaseModel):
-    """One request sent from the React frontend to the Python backend."""
+    """前端发送给 Python 后端的单条请求。
+
+    支持的请求类型包括：
+    - submit_line：提交用户输入行
+    - permission_response：权限确认响应
+    - question_response：问题回答响应
+    - list_sessions：列出可恢复会话
+    - select_command / apply_select_command：选择/应用配置命令
+    - shutdown：关闭后端
+    """
 
     type: Literal[
         "submit_line",
@@ -33,7 +52,11 @@ class FrontendRequest(BaseModel):
 
 
 class TranscriptItem(BaseModel):
-    """One transcript row rendered by the frontend."""
+    """前端渲染的一条对话记录条目。
+
+    包含角色（system/user/assistant/tool/tool_result/log）、
+    文本内容、可选的工具名称和输入、错误标记。
+    """
 
     role: Literal["system", "user", "assistant", "tool", "tool_result", "log"]
     text: str
@@ -43,7 +66,11 @@ class TranscriptItem(BaseModel):
 
 
 class TaskSnapshot(BaseModel):
-    """UI-safe task representation."""
+    """UI 安全的后台任务表示。
+
+    包含任务 ID、类型、状态、描述和元数据，
+    用于向前端传递任务列表信息。
+    """
 
     id: str
     type: str
@@ -53,6 +80,7 @@ class TaskSnapshot(BaseModel):
 
     @classmethod
     def from_record(cls, record: TaskRecord) -> "TaskSnapshot":
+        """从 TaskRecord 创建 TaskSnapshot 实例。"""
         return cls(
             id=record.id,
             type=record.type,
@@ -63,7 +91,17 @@ class TaskSnapshot(BaseModel):
 
 
 class BackendEvent(BaseModel):
-    """One event sent from the Python backend to the React frontend."""
+    """Python 后端发送给 React 前端的单条事件。
+
+    支持的事件类型包括：ready（就绪）、state_snapshot（状态快照）、
+    tasks_snapshot（任务快照）、transcript_item（对话条目）、
+    compact_progress（压缩进度）、assistant_delta/assistant_complete
+    （助手文本）、line_complete（行处理完成）、tool_started/tool_completed
+    （工具事件）、clear_transcript（清空对话）、modal_request（模态弹窗请求）、
+    select_request（选择器请求）、todo_update（待办更新）、
+    plan_mode_change（计划模式变更）、swarm_status（集群状态）、
+    error/shutdown（错误/关闭）。
+    """
 
     type: Literal[
         "ready",
@@ -116,6 +154,7 @@ class BackendEvent(BaseModel):
         tasks: list[TaskRecord],
         commands: list[str],
     ) -> "BackendEvent":
+        """创建 ready 事件，携带初始应用状态、任务列表和可用命令。"""
         return cls(
             type="ready",
             state=_state_payload(state),
@@ -127,10 +166,12 @@ class BackendEvent(BaseModel):
 
     @classmethod
     def state_snapshot(cls, state: AppState) -> "BackendEvent":
+        """创建 state_snapshot 事件，携带当前应用状态。"""
         return cls(type="state_snapshot", state=_state_payload(state))
 
     @classmethod
     def tasks_snapshot(cls, tasks: list[TaskRecord]) -> "BackendEvent":
+        """创建 tasks_snapshot 事件，携带当前任务列表。"""
         return cls(
             type="tasks_snapshot",
             tasks=[TaskSnapshot.from_record(task) for task in tasks],
@@ -144,6 +185,7 @@ class BackendEvent(BaseModel):
         mcp_servers: list[McpConnectionStatus],
         bridge_sessions: list[BridgeSessionRecord],
     ) -> "BackendEvent":
+        """创建完整的状态快照事件，包含应用状态、MCP 服务器和 Bridge 会话信息。"""
         return cls(
             type="state_snapshot",
             state=_state_payload(state),
@@ -175,6 +217,11 @@ class BackendEvent(BaseModel):
 
 
 def _state_payload(state: AppState) -> dict[str, Any]:
+    """将 AppState 转换为前端可消费的字典结构。
+
+    包含模型、工作目录、提供商、认证状态、权限模式、主题、
+    Vim/语音模式、快速模式、努力级别、MCP/Bridge 连接状态等字段。
+    """
     return {
         "model": state.model,
         "cwd": state.cwd,
@@ -209,7 +256,11 @@ _MODE_LABELS = {
 
 
 def _format_permission_mode(raw: str) -> str:
-    """Convert raw permission mode to human-readable label."""
+    """将原始权限模式字符串转换为人类可读的标签。
+
+    如 "default" → "Default"、"plan" → "Plan Mode"、"full_auto" → "Auto"。
+    未匹配的值原样返回。
+    """
     return _MODE_LABELS.get(raw, raw)
 
 

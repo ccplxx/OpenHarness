@@ -1,4 +1,13 @@
-"""Subprocess-based TeammateExecutor implementation."""
+"""基于子进程的 TeammateExecutor 实现。
+
+本模块实现 :class:`SubprocessBackend`，将每个 teammate 作为独立子进程运行，
+通过 :class:`~openharness.tasks.manager.BackgroundTaskManager` 创建和管理子进程，
+利用 stdin/stdout JSON 管道进行消息通信。
+
+子进程后端始终可用（无外部依赖），是所有后端中的安全回退方案。
+生成时自动构建继承自父会话的 CLI 标志和环境变量，确保子进程
+使用与 leader 相同的模型、权限模式和 API 提供方配置。
+"""
 
 from __future__ import annotations
 
@@ -26,10 +35,10 @@ logger = logging.getLogger(__name__)
 
 
 class SubprocessBackend:
-    """TeammateExecutor that runs each teammate as a separate subprocess.
+    """将每个 teammate 作为独立子进程运行的 TeammateExecutor。
 
-    Uses the existing :class:`~openharness.tasks.manager.BackgroundTaskManager`
-    to create and manage the child processes, communicating via stdin/stdout.
+    使用现有的 :class:`~openharness.tasks.manager.BackgroundTaskManager`
+    创建和管理子进程，通过 stdin/stdout 进行通信。
     """
 
     type: BackendType = "subprocess"
@@ -38,17 +47,18 @@ class SubprocessBackend:
     _agent_tasks: dict[str, str]
 
     def __init__(self) -> None:
+        """初始化 SubprocessBackend，创建智能体到任务 ID 的映射表。"""
         self._agent_tasks = {}
 
     def is_available(self) -> bool:
-        """Subprocess backend is always available."""
+        """子进程后端始终可用。"""
         return True
 
     async def spawn(self, config: TeammateSpawnConfig) -> SpawnResult:
-        """Spawn a new teammate as a subprocess via the task manager.
+        """通过任务管理器将 teammate 作为子进程生成。
 
-        Builds the appropriate CLI command and creates a ``local_agent`` task
-        that accepts the initial prompt via stdin.
+        构建适当的 CLI 命令，创建通过 stdin 接受初始提示的
+        ``local_agent`` 任务。
         """
         agent_id = f"{config.name}@{config.team}"
 
@@ -103,10 +113,9 @@ class SubprocessBackend:
         )
 
     async def send_message(self, agent_id: str, message: TeammateMessage) -> None:
-        """Send a message to a running teammate via its stdin pipe.
+        """通过 stdin 管道向运行中的 teammate 发送消息。
 
-        The message is serialised as a single JSON line so the teammate can
-        distinguish structured messages from plain prompts.
+        消息序列化为单行 JSON，使 teammate 能区分结构化消息与普通提示。
         """
         task_id = self._agent_tasks.get(agent_id)
         if task_id is None:
@@ -127,15 +136,15 @@ class SubprocessBackend:
         logger.debug("Sent message to %s (task %s)", agent_id, task_id)
 
     async def shutdown(self, agent_id: str, *, force: bool = False) -> bool:
-        """Terminate a subprocess teammate.
+        """终止子进程 teammate。
 
         Args:
-            agent_id: The agent to terminate.
-            force: Ignored for subprocess backend; always sends SIGTERM then
-                   SIGKILL after a brief wait (handled by the task manager).
+            agent_id: 待终止的智能体。
+            force: 子进程后端忽略此参数；始终发送 SIGTERM，
+                短暂等待后发送 SIGKILL（由任务管理器处理）。
 
         Returns:
-            True if the task was found and terminated.
+            找到并终止任务返回 True。
         """
         task_id = self._agent_tasks.get(agent_id)
         if task_id is None:
@@ -155,5 +164,12 @@ class SubprocessBackend:
         return True
 
     def get_task_id(self, agent_id: str) -> str | None:
-        """Return the task manager task ID for a given agent, if known."""
+        """返回指定智能体在任务管理器中的任务 ID。
+
+        Args:
+            agent_id: 智能体标识符（格式 ``name@team``）。
+
+        Returns:
+            任务 ID 字符串，若未知则返回 None。
+        """
         return self._agent_tasks.get(agent_id)

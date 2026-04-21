@@ -1,4 +1,15 @@
-"""Agent definition loading system for OpenHarness."""
+"""代理定义加载系统。
+
+本模块实现了 OpenHarness 代理（agent/subagent）的定义模型与加载机制，负责：
+
+- 定义 AgentDefinition Pydantic 模型，包含代理的全部配置字段
+  （名称、描述、系统提示词、工具列表、模型、权限模式、MCP 服务器等）
+- 提供内置代理定义（general-purpose、Explore、Plan、worker、verification 等）
+- 从用户目录（~/.openharness/agents/）的 Markdown 文件加载自定义代理定义，
+  支持 YAML frontmatter 格式解析
+- 支持插件代理定义的合并加载，按优先级：内置 < 用户 < 插件
+- 提供 MCP 服务器需求检查与代理过滤功能
+"""
 
 from __future__ import annotations
 
@@ -32,9 +43,11 @@ AGENT_COLORS: frozenset[str] = frozenset(
         "gray",
     }
 )
+"""代理可用的颜色名称集合，与 TypeScript 端 AgentColorName 保持一致。"""
 
 #: Valid effort level strings (maps to EFFORT_LEVELS in TS).
 EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high")
+"""有效的努力级别字符串元组，映射 TypeScript 端的 EFFORT_LEVELS。"""
 
 #: Valid permission mode strings (maps to PERMISSION_MODES in TS).
 PERMISSION_MODES: tuple[str, ...] = (
@@ -44,12 +57,15 @@ PERMISSION_MODES: tuple[str, ...] = (
     "plan",
     "dontAsk",
 )
+"""有效的权限模式字符串元组，映射 TypeScript 端的 PERMISSION_MODES。"""
 
 #: Valid memory scope strings (maps to AgentMemoryScope in TS).
 MEMORY_SCOPES: tuple[str, ...] = ("user", "project", "local")
+"""有效的内存作用域字符串元组，映射 TypeScript 端的 AgentMemoryScope。"""
 
 #: Valid isolation mode strings.
 ISOLATION_MODES: tuple[str, ...] = ("worktree", "remote")
+"""有效的隔离模式字符串元组，用于代理工作空间隔离。"""
 
 
 # ---------------------------------------------------------------------------
@@ -58,31 +74,31 @@ ISOLATION_MODES: tuple[str, ...] = ("worktree", "remote")
 
 
 class AgentDefinition(BaseModel):
-    """Full agent definition with all configuration fields.
+    """完整的代理定义模型，包含所有配置字段。
 
-    Field mapping to TypeScript ``BaseAgentDefinition``:
-    - ``name``          → ``agentType``
-    - ``description``   → ``whenToUse``
-    - ``system_prompt`` → ``getSystemPrompt()`` return value
-    - ``tools``         → ``tools`` (None means all tools / ``['*']``)
-    - ``disallowed_tools`` → ``disallowedTools``
-    - ``skills``        → ``skills``
-    - ``mcp_servers``   → ``mcpServers``
-    - ``hooks``         → ``hooks``
-    - ``color``         → ``color``
-    - ``model``         → ``model``
-    - ``effort``        → ``effort``
-    - ``permission_mode`` → ``permissionMode``
-    - ``max_turns``     → ``maxTurns``
-    - ``filename``      → ``filename``
-    - ``base_dir``      → ``baseDir``
-    - ``critical_system_reminder`` → ``criticalSystemReminder_EXPERIMENTAL``
-    - ``required_mcp_servers`` → ``requiredMcpServers``
-    - ``background``    → ``background``
-    - ``initial_prompt`` → ``initialPrompt``
-    - ``memory``        → ``memory``
-    - ``isolation``     → ``isolation``
-    - ``omit_claude_md`` → ``omitClaudeMd``
+    字段与 TypeScript 端 BaseAgentDefinition 的映射关系：
+    - ``name``          → ``agentType``（代理类型标识）
+    - ``description``   → ``whenToUse``（何时使用此代理的说明）
+    - ``system_prompt`` → ``getSystemPrompt()`` 返回值（系统提示词）
+    - ``tools``         → ``tools``（None 表示允许所有工具，等效于 ['*']）
+    - ``disallowed_tools`` → ``disallowedTools``（禁止使用的工具列表）
+    - ``skills``        → ``skills``（可用技能列表）
+    - ``mcp_servers``   → ``mcpServers``（MCP 服务器配置）
+    - ``hooks``         → ``hooks``（会话级钩子）
+    - ``color``         → ``color``（UI 显示颜色）
+    - ``model``         → ``model``（模型覆盖）
+    - ``effort``        → ``effort``（努力级别）
+    - ``permission_mode`` → ``permissionMode``（权限模式）
+    - ``max_turns``     → ``maxTurns``（最大轮次）
+    - ``filename``      → ``filename``（原始文件名）
+    - ``base_dir``      → ``baseDir``（加载目录）
+    - ``critical_system_reminder`` → ``criticalSystemReminder_EXPERIMENTAL``（每轮重注入提醒）
+    - ``required_mcp_servers`` → ``requiredMcpServers``（必需的 MCP 服务器）
+    - ``background``    → ``background``（是否始终作为后台任务运行）
+    - ``initial_prompt`` → ``initialPrompt``（首次用户轮前置提示）
+    - ``memory``        → ``memory``（内存作用域）
+    - ``isolation``     → ``isolation``（隔离模式）
+    - ``omit_claude_md`` → ``omitClaudeMd``（是否跳过 CLAUDE.md 注入）
     """
 
     # --- required ---
@@ -621,7 +637,12 @@ _BUILTIN_AGENTS: list[AgentDefinition] = [
 
 
 def get_builtin_agent_definitions() -> list[AgentDefinition]:
-    """Return the built-in agent definitions."""
+    """返回内置代理定义列表的副本。
+
+    内置代理包括：general-purpose（通用代理）、statusline-setup（状态栏配置）、
+    claude-code-guide（使用指南）、Explore（代码探索）、Plan（架构规划）、
+    worker（实现执行）、verification（验证审计）。
+    """
     return list(_BUILTIN_AGENTS)
 
 
@@ -631,10 +652,12 @@ def get_builtin_agent_definitions() -> list[AgentDefinition]:
 
 
 def _parse_agent_frontmatter(content: str) -> tuple[dict[str, Any], str]:
-    """Parse YAML frontmatter from a markdown file.
+    """从 Markdown 文件内容中解析 YAML frontmatter。
 
-    Returns a (frontmatter_dict, body) tuple. Uses ``yaml.safe_load`` for
-    proper YAML parsing (supports nested structures for hooks, mcpServers, etc.).
+    返回 (frontmatter_dict, body) 元组。使用 yaml.safe_load 进行
+    正确的 YAML 解析（支持 hooks、mcpServers 等嵌套结构）。
+    若 YAML 解析失败，回退到简单的 key:value 行解析。
+    如果文件不以 --- 开头或未找到闭合 ---，则返回空 frontmatter 和原始内容。
     """
     frontmatter: dict[str, Any] = {}
     body = content
@@ -670,7 +693,11 @@ def _parse_agent_frontmatter(content: str) -> tuple[dict[str, Any], str]:
 
 
 def _parse_str_list(raw: Any) -> list[str] | None:
-    """Parse a comma-separated string or list into a list of strings."""
+    """将逗号分隔字符串或列表解析为字符串列表。
+
+    支持输入为 list（逐项转换去空白）或 str（按逗号分割去空白），
+    空结果返回 None。
+    """
     if raw is None:
         return None
     if isinstance(raw, list):
@@ -682,7 +709,7 @@ def _parse_str_list(raw: Any) -> list[str] | None:
 
 
 def _parse_positive_int(raw: Any) -> int | None:
-    """Parse a positive integer from frontmatter, returning None if invalid."""
+    """从 frontmatter 值解析正整数，无效值返回 None。"""
     if raw is None:
         return None
     try:
@@ -693,37 +720,37 @@ def _parse_positive_int(raw: Any) -> int | None:
 
 
 def load_agents_dir(directory: Path) -> list[AgentDefinition]:
-    """Load agent definitions from .md files in *directory*.
+    """从指定目录的 .md 文件加载代理定义。
 
-    Each file should contain YAML frontmatter with at least ``name`` and
-    ``description`` fields. The markdown body becomes the ``system_prompt``.
+    每个文件应包含 YAML frontmatter（至少含 name 和 description 字段），
+    Markdown 正文成为 system_prompt。
 
-    Supported frontmatter fields (all optional unless noted):
+    支持的 frontmatter 字段（除非标注均为可选）：
 
-    Required:
-    * ``name`` — agent type identifier
-    * ``description`` — when-to-use description shown to the spawning agent
+    必填：
+    * ``name`` — 代理类型标识符
+    * ``description`` — 何时使用此代理的说明
 
-    Optional:
-    * ``tools`` — comma-separated or YAML list of allowed tool names
-    * ``disallowedTools`` / ``disallowed_tools`` — comma-separated or list of disallowed tools
-    * ``model`` — model override (e.g. "haiku", "inherit")
-    * ``effort`` — "low", "medium", "high", or a positive integer
-    * ``permissionMode`` / ``permission_mode`` — one of PERMISSION_MODES
-    * ``maxTurns`` / ``max_turns`` — positive integer turn limit
-    * ``skills`` — comma-separated or list of skill names
-    * ``mcpServers`` / ``mcp_servers`` — list of MCP server references or inline configs
-    * ``hooks`` — YAML dict of session-scoped hooks
-    * ``color`` — one of AGENT_COLORS
-    * ``background`` — true/false; run as background task
-    * ``initialPrompt`` / ``initial_prompt`` — string prepended to first user turn
-    * ``memory`` — one of MEMORY_SCOPES
-    * ``isolation`` — one of ISOLATION_MODES
-    * ``omitClaudeMd`` / ``omit_claude_md`` — true/false; skip CLAUDE.md injection
-    * ``criticalSystemReminder`` / ``critical_system_reminder`` — re-injected message
-    * ``requiredMcpServers`` / ``required_mcp_servers`` — list of required server patterns
-    * ``permissions`` — comma-separated extra permission rules (Python-specific)
-    * ``subagent_type`` — routing key (Python-specific, defaults to name)
+    可选：
+    * ``tools`` — 逗号分隔或 YAML 列表的允许工具名
+    * ``disallowedTools`` / ``disallowed_tools`` — 禁止使用的工具列表
+    * ``model`` — 模型覆盖（如 "haiku"、"inherit"）
+    * ``effort`` — "low"、"medium"、"high" 或正整数
+    * ``permissionMode`` / ``permission_mode`` — PERMISSION_MODES 之一
+    * ``maxTurns`` / ``max_turns`` — 正整数轮次限制
+    * ``skills`` — 逗号分隔或列表的技能名称
+    * ``mcpServers`` / ``mcp_servers`` — MCP 服务器引用或内联配置列表
+    * ``hooks`` — 会话级钩子的 YAML 字典
+    * ``color`` — AGENT_COLORS 之一
+    * ``background`` — true/false；作为后台任务运行
+    * ``initialPrompt`` / ``initial_prompt`` — 首次用户轮前置提示字符串
+    * ``memory`` — MEMORY_SCOPES 之一
+    * ``isolation`` — ISOLATION_MODES 之一
+    * ``omitClaudeMd`` / ``omit_claude_md`` — true/false；跳过 CLAUDE.md 注入
+    * ``criticalSystemReminder`` / ``critical_system_reminder`` — 每轮重注入消息
+    * ``requiredMcpServers`` / ``required_mcp_servers`` — 必需的服务器模式列表
+    * ``permissions`` — 逗号分隔的额外权限规则（Python 特有）
+    * ``subagent_type`` — 路由键（Python 特有，默认为 name）
     """
     agents: list[AgentDefinition] = []
 
@@ -898,20 +925,19 @@ def load_agents_dir(directory: Path) -> list[AgentDefinition]:
 
 
 def _get_user_agents_dir() -> Path:
-    """Return the user agent definitions directory."""
+    """返回用户自定义代理定义目录路径（~/.openharness/agents/）。"""
     return get_config_dir() / "agents"
 
 
 def get_all_agent_definitions() -> list[AgentDefinition]:
-    """Return all agent definitions: built-in + user + plugin.
+    """返回所有代理定义：内置 + 用户 + 插件。
 
-    Merge order (last writer wins for same ``name``):
-    1. Built-in agents
-    2. User agents (~/.openharness/agents/)
-    3. Plugin agents (loaded from active plugins)
+    合并顺序（同名代理后者覆盖前者）：
+    1. 内置代理（最低优先级）
+    2. 用户代理（~/.openharness/agents/）
+    3. 插件代理（从活跃插件加载）
 
-    User definitions override built-ins with the same name; plugin definitions
-    override user definitions with the same name.
+    用户定义可覆盖同名内置代理，插件定义可覆盖同名用户定义。
     """
     agent_map: dict[str, AgentDefinition] = {}
 
@@ -946,7 +972,7 @@ def get_all_agent_definitions() -> list[AgentDefinition]:
 
 
 def get_agent_definition(name: str) -> AgentDefinition | None:
-    """Return the agent definition for *name*, or ``None`` if not found."""
+    """按名称查找代理定义，未找到返回 None。"""
     for agent in get_all_agent_definitions():
         if agent.name == name:
             return agent
@@ -954,10 +980,11 @@ def get_agent_definition(name: str) -> AgentDefinition | None:
 
 
 def has_required_mcp_servers(agent: AgentDefinition, available_servers: list[str]) -> bool:
-    """Return True if the agent's required MCP servers are all available.
+    """判断代理所需的所有 MCP 服务器是否可用。
 
-    Each pattern in ``required_mcp_servers`` must match (case-insensitive
-    substring) at least one server in ``available_servers``.
+    required_mcp_servers 中的每个模式必须（大小写不敏感的子串匹配）
+    在 available_servers 中至少匹配一个服务器名称。
+    若代理未声明 required_mcp_servers，始终返回 True。
     """
     if not agent.required_mcp_servers:
         return True
@@ -971,5 +998,5 @@ def filter_agents_by_mcp_requirements(
     agents: list[AgentDefinition],
     available_servers: list[str],
 ) -> list[AgentDefinition]:
-    """Return only agents whose required MCP servers are available."""
+    """过滤代理列表，仅保留所需 MCP 服务器均可用的代理。"""
     return [a for a in agents if has_required_mcp_servers(a, available_servers)]

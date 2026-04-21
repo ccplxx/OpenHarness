@@ -1,12 +1,12 @@
-"""Persistent team lifecycle management for OpenHarness swarms.
+"""Swarm 团队持久化生命周期管理模块。
 
-Teams are stored as JSON files on disk:
+团队以 JSON 文件存储于磁盘：
     ~/.openharness/teams/<name>/team.json
 
-This module provides TeamMember, TeamFile, AllowedPath, TeamLifecycleManager
-and a full set of CRUD helpers matching the TS teamHelpers.ts API.
-The TeamLifecycleManager can work alongside the in-memory TeamRegistry
-in coordinator_mode.py without modifying that module.
+本模块提供 TeamMember、TeamFile、AllowedPath、TeamLifecycleManager
+以及完整的 CRUD 辅助函数，与 TS 源码 teamHelpers.ts API 对齐。
+TeamLifecycleManager 可与 coordinator_mode.py 中的内存 TeamRegistry
+协同工作而无需修改该模块。
 """
 
 from __future__ import annotations
@@ -32,18 +32,18 @@ from openharness.swarm.types import BackendType
 
 
 def sanitize_name(name: str) -> str:
-    """Replace all non-alphanumeric characters with hyphens and lowercase.
+    """将所有非字母数字字符替换为连字符并转小写。
 
-    Mirrors TS ``sanitizeName``:
+    镜像 TS ``sanitizeName``：
     ``name.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase()``
     """
     return re.sub(r"[^a-zA-Z0-9]", "-", name).lower()
 
 
 def sanitize_agent_name(name: str) -> str:
-    """Replace ``@`` with ``-`` to avoid ambiguity in agentName@teamName format.
+    """将 ``@`` 替换为 ``-`` 以避免 agentName@teamName 格式的歧义。
 
-    Mirrors TS ``sanitizeAgentName``:
+    镜像 TS ``sanitizeAgentName``：
     ``name.replace(/@/g, '-')``
     """
     return name.replace("@", "-")
@@ -56,31 +56,39 @@ def sanitize_agent_name(name: str) -> str:
 
 @dataclass
 class AllowedPath:
-    """A path that all team members can edit without asking for permission."""
+    """所有团队成员无需请求权限即可编辑的路径。"""
 
     path: str
-    """Absolute directory path."""
+    """绝对目录路径。"""
 
     tool_name: str
-    """The tool this applies to (e.g. 'Edit', 'Write')."""
+    """适用的工具名称（如 'Edit'、'Write'）。"""
 
     added_by: str
-    """Agent name who added this rule."""
+    """添加此规则的智能体名称。"""
 
     added_at: float = field(default_factory=time.time)
-    """Timestamp when the rule was added."""
+    """规则添加时的时间戳。"""
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "path": self.path,
-            "tool_name": self.tool_name,
-            "added_by": self.added_by,
-            "added_at": self.added_at,
-        }
+        """将允许路径规则序列化为字典。
+
+        Returns:
+            包含 path、tool_name、added_by、added_at 的字典。
+        """
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AllowedPath":
-        return cls(
+        """从字典反序列化构建 AllowedPath 实例。
+
+        兼容 camelCase 和 snake_case 字段名。
+
+        Args:
+            data: 包含允许路径字段的字典。
+
+        Returns:
+            反序列化后的 :class:`AllowedPath` 实例。
+        """
             path=data["path"],
             tool_name=data.get("tool_name", data.get("toolName", "")),
             added_by=data.get("added_by", data.get("addedBy", "")),
@@ -90,7 +98,7 @@ class AllowedPath:
 
 @dataclass
 class TeamMember:
-    """A member of a swarm team."""
+    """Swarm 团队的成员。"""
 
     agent_id: str
     name: str
@@ -99,51 +107,53 @@ class TeamMember:
 
     # Optional fields matching TS TeamFile member shape
     agent_type: str | None = None
-    """Type/role of the agent (e.g. 'researcher', 'test-runner')."""
+    """智能体的类型/角色（如 'researcher'、'test-runner'）。"""
 
     model: str | None = None
-    """Model identifier used by this agent."""
+    """该智能体使用的模型标识符。"""
 
     prompt: str | None = None
-    """Initial system prompt for this agent."""
+    """该智能体的初始系统提示词。"""
 
     color: str | None = None
-    """Assigned display colour (e.g. 'red', 'blue', 'green')."""
+    """分配的显示颜色（如 'red'、'blue'、'green'）。"""
 
     plan_mode_required: bool = False
-    """Whether this agent requires plan-mode approval before acting."""
+    """该智能体是否需要在行动前进入计划模式审批。"""
 
     session_id: str | None = None
-    """Actual session UUID of this agent (for discovery)."""
+    """该智能体的实际会话 UUID（用于发现）。"""
 
     subscriptions: list[str] = field(default_factory=list)
-    """Event topics this agent subscribes to."""
+    """该智能体订阅的事件主题。"""
 
     is_active: bool = True
-    """False when idle; undefined/True when active."""
+    """空闲时为 False；活跃时为 True/未定义。"""
 
     mode: str | None = None
-    """Current permission mode for this agent (e.g. 'auto', 'manual')."""
+    """该智能体当前的权限模式（如 'auto'、'manual'）。"""
 
     tmux_pane_id: str = ""
-    """Tmux/iTerm2 pane ID for pane-backed agents."""
+    """面板后端智能体的 Tmux/iTerm2 面板 ID。"""
 
     cwd: str = ""
-    """Working directory for this agent."""
+    """该智能体的工作目录。"""
 
     worktree_path: str | None = None
-    """Git worktree path, if the agent operates in an isolated worktree."""
+    """Git worktree 路径（若智能体在隔离的 worktree 中操作）。"""
 
     permissions: list[str] = field(default_factory=list)
-    """Legacy permission strings list."""
+    """遗留权限字符串列表。"""
 
     status: Literal["active", "idle", "stopped"] = "active"
-    """Coarse status of this agent."""
+    """该智能体的粗略状态。"""
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "agent_id": self.agent_id,
-            "name": self.name,
+        """将团队成员信息序列化为字典。
+
+        Returns:
+            包含所有成员字段的字典。
+        """
             "backend_type": self.backend_type,
             "joined_at": self.joined_at,
             "agent_type": self.agent_type,
@@ -164,7 +174,14 @@ class TeamMember:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TeamMember":
-        return cls(
+        """从字典反序列化构建 TeamMember 实例。
+
+        Args:
+            data: 包含成员字段的字典。
+
+        Returns:
+            反序列化后的 :class:`TeamMember` 实例。
+        """
             agent_id=data["agent_id"],
             name=data["name"],
             backend_type=data["backend_type"],
@@ -188,7 +205,7 @@ class TeamMember:
 
 @dataclass
 class TeamFile:
-    """Persistent team metadata stored as team.json inside the team directory."""
+    """持久化的团队元数据，以 team.json 存储在团队目录中。"""
 
     name: str
     created_at: float
@@ -196,22 +213,22 @@ class TeamFile:
     description: str = ""
 
     lead_agent_id: str = ""
-    """Agent ID of the team leader."""
+    """团队领导者的智能体 ID。"""
 
     lead_session_id: str | None = None
-    """Actual session UUID of the leader (for discovery)."""
+    """领导者的实际会话 UUID（用于发现）。"""
 
     hidden_pane_ids: list[str] = field(default_factory=list)
-    """Pane IDs that are currently hidden from the UI."""
+    """当前在 UI 中隐藏的面板 ID。"""
 
     members: dict[str, TeamMember] = field(default_factory=dict)
-    """Dict mapping agent_id → TeamMember."""
+    """agent_id → TeamMember 的映射字典。"""
 
     team_allowed_paths: list[AllowedPath] = field(default_factory=list)
-    """Paths all teammates can edit without asking."""
+    """所有 teammate 无需请求权限即可编辑的路径。"""
 
     allowed_paths: list[str] = field(default_factory=list)
-    """Legacy list of allowed path strings."""
+    """遗留的允许路径字符串列表。"""
 
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -220,9 +237,13 @@ class TeamFile:
     # ------------------------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "description": self.description,
+        """将团队文件元数据序列化为字典，用于 JSON 持久化。
+
+        members 和 team_allowed_paths 会递归调用各自的 ``to_dict``。
+
+        Returns:
+            包含所有团队字段的字典。
+        """
             "created_at": self.created_at,
             "lead_agent_id": self.lead_agent_id,
             "lead_session_id": self.lead_session_id,
@@ -235,6 +256,16 @@ class TeamFile:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TeamFile":
+        """从字典反序列化构建 TeamFile 实例。
+
+        会递归反序列化 members 和 team_allowed_paths。
+
+        Args:
+            data: 包含团队文件字段的字典。
+
+        Returns:
+            反序列化后的 :class:`TeamFile` 实例。
+        """
         members = {
             k: TeamMember.from_dict(v)
             for k, v in data.get("members", {}).items()
@@ -261,7 +292,7 @@ class TeamFile:
     # ------------------------------------------------------------------
 
     def save(self, path: Path) -> None:
-        """Atomically write this team file to *path*."""
+        """原子性地将团队文件写入 *path*。"""
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
@@ -269,11 +300,11 @@ class TeamFile:
 
     @classmethod
     def load(cls, path: Path) -> "TeamFile":
-        """Load a TeamFile from *path*.
+        """从 *path* 加载 TeamFile。
 
         Raises:
-            FileNotFoundError: if *path* does not exist.
-            json.JSONDecodeError: if the file is not valid JSON.
+            FileNotFoundError: *path* 不存在时。
+            json.JSONDecodeError: 文件不是有效 JSON 时。
         """
         data = json.loads(path.read_text(encoding="utf-8"))
         return cls.from_dict(data)
@@ -287,12 +318,25 @@ _TEAM_FILE_NAME = "team.json"
 
 
 def _team_file_path(name: str) -> Path:
-    """Return the path to the team.json for *name*."""
-    return get_team_dir(name) / _TEAM_FILE_NAME
+    """返回指定团队名称的 ``team.json`` 文件路径。
+
+    Args:
+        name: 团队名称。
+
+    Returns:
+        ``~/.openharness/teams/<name>/team.json`` 的 Path 对象。
+    """
 
 
 def get_team_file_path(team_name: str) -> Path:
-    """Public accessor for the team.json path."""
+    """公开访问器：返回指定团队的 ``team.json`` 路径。
+
+    Args:
+        team_name: 团队名称。
+
+    Returns:
+        team.json 的 Path 对象。
+    """
     return _team_file_path(team_name)
 
 
@@ -302,10 +346,9 @@ def get_team_file_path(team_name: str) -> Path:
 
 
 def read_team_file(team_name: str) -> TeamFile | None:
-    """Read and return the TeamFile for *team_name*, or ``None`` if missing.
+    """读取并返回指定团队的 TeamFile，缺失时返回 ``None``。
 
-    Uses synchronous I/O — safe for use in sync contexts such as React-like
-    render paths or signal handlers.
+    使用同步 I/O——适用于同步上下文，如类 React 渲染路径或信号处理器。
     """
     path = _team_file_path(team_name)
     if not path.exists():
@@ -317,7 +360,7 @@ def read_team_file(team_name: str) -> TeamFile | None:
 
 
 def write_team_file(team_name: str, team_file: TeamFile) -> None:
-    """Persist *team_file* to disk (synchronous)."""
+    """将 *team_file* 持久化到磁盘（同步）。"""
     team_file.save(_team_file_path(team_name))
 
 
@@ -327,13 +370,13 @@ def write_team_file(team_name: str, team_file: TeamFile) -> None:
 
 
 async def read_team_file_async(team_name: str) -> TeamFile | None:
-    """Async wrapper around :func:`read_team_file`."""
+    """ :func:`read_team_file` 的异步包装器。"""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, read_team_file, team_name)
 
 
 async def write_team_file_async(team_name: str, team_file: TeamFile) -> None:
-    """Async wrapper around :func:`write_team_file`."""
+    """ :func:`write_team_file` 的异步包装器。"""
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, write_team_file, team_name, team_file)
 
@@ -347,14 +390,14 @@ def remove_teammate_from_team_file(
     team_name: str,
     identifier: dict[str, str | None],
 ) -> bool:
-    """Remove a teammate from the team file by agent_id or name.
+    """通过 agent_id 或名称从团队文件中移除 teammate。
 
     Args:
-        team_name: The name of the team.
-        identifier: Dict with optional ``agent_id`` and/or ``name`` keys.
+        team_name: 团队名称。
+        identifier: 包含可选 ``agent_id`` 和/或 ``name`` 键的字典。
 
     Returns:
-        ``True`` if a member was removed, ``False`` otherwise.
+        成功移除成员返回 True，否则 False。
     """
     agent_id = identifier.get("agent_id")
     name = identifier.get("name")
@@ -382,10 +425,10 @@ def remove_teammate_from_team_file(
 
 
 def add_hidden_pane_id(team_name: str, pane_id: str) -> bool:
-    """Add *pane_id* to the hidden panes list in the team file.
+    """将 *pane_id* 添加到团队文件的隐藏面板列表。
 
     Returns:
-        ``True`` if successful, ``False`` if the team does not exist.
+        成功返回 True，团队不存在返回 False。
     """
     team_file = read_team_file(team_name)
     if not team_file:
@@ -398,10 +441,10 @@ def add_hidden_pane_id(team_name: str, pane_id: str) -> bool:
 
 
 def remove_hidden_pane_id(team_name: str, pane_id: str) -> bool:
-    """Remove *pane_id* from the hidden panes list in the team file.
+    """从团队文件的隐藏面板列表中移除 *pane_id*。
 
     Returns:
-        ``True`` if successful, ``False`` if the team does not exist.
+        成功返回 True，团队不存在返回 False。
     """
     team_file = read_team_file(team_name)
     if not team_file:
@@ -416,10 +459,10 @@ def remove_hidden_pane_id(team_name: str, pane_id: str) -> bool:
 
 
 def remove_member_from_team(team_name: str, tmux_pane_id: str) -> bool:
-    """Remove a team member by tmux pane ID (also removes from hidden panes).
+    """通过 tmux 面板 ID 移除团队成员（同时从隐藏面板列表移除）。
 
     Returns:
-        ``True`` if the member was found and removed, ``False`` otherwise.
+        找到并移除成员返回 True，否则 False。
     """
     team_file = read_team_file(team_name)
     if not team_file:
@@ -447,12 +490,12 @@ def remove_member_from_team(team_name: str, tmux_pane_id: str) -> bool:
 
 
 def remove_member_by_agent_id(team_name: str, agent_id: str) -> bool:
-    """Remove a team member by agent ID.
+    """通过智能体 ID 移除团队成员。
 
-    Use this for in-process teammates which may share the same tmux_pane_id.
+    适用于可能共享同一 tmux_pane_id 的进程内 teammate。
 
     Returns:
-        ``True`` if the member was found and removed, ``False`` otherwise.
+        找到并移除成员返回 True，否则 False。
     """
     team_file = read_team_file(team_name)
     if not team_file:
@@ -476,17 +519,17 @@ def set_member_mode(
     member_name: str,
     mode: str,
 ) -> bool:
-    """Set a team member's permission mode.
+    """设置团队成员的权限模式。
 
-    Called when the team leader changes a teammate's mode.
+    团队领导者更改 teammate 模式时调用。
 
     Args:
-        team_name: The name of the team.
-        member_name: The *name* (not agent_id) of the member to update.
-        mode: The new permission mode string (e.g. ``'auto'``, ``'manual'``).
+        team_name: 团队名称。
+        member_name: 待更新成员的 *name*（非 agent_id）。
+        mode: 新的权限模式字符串（如 ``'auto'``、``'manual'``）。
 
     Returns:
-        ``True`` if successful, ``False`` if the team or member is not found.
+        成功返回 True，团队或成员不存在返回 False。
     """
     team_file = read_team_file(team_name)
     if not team_file:
@@ -517,13 +560,13 @@ def sync_teammate_mode(
     mode: str,
     team_name_override: str | None = None,
 ) -> None:
-    """Sync the current agent's permission mode to the team config file.
+    """将当前智能体的权限模式同步到团队配置文件。
 
-    No-op if ``CLAUDE_CODE_AGENT_NAME`` or the resolved team name are not set.
+    若 ``CLAUDE_CODE_AGENT_NAME`` 或解析的团队名称未设置则为空操作。
 
     Args:
-        mode: The permission mode to sync.
-        team_name_override: Optional override for the team name.
+        mode: 待同步的权限模式。
+        team_name_override: 可选的团队名称覆盖。
     """
     team_name = team_name_override or os.environ.get("CLAUDE_CODE_TEAM_NAME")
     agent_name = os.environ.get("CLAUDE_CODE_AGENT_NAME")
@@ -535,14 +578,14 @@ def set_multiple_member_modes(
     team_name: str,
     mode_updates: list[dict[str, str]],
 ) -> bool:
-    """Set multiple team members' permission modes in a single atomic write.
+    """在单次原子写入中设置多个团队成员的权限模式。
 
     Args:
-        team_name: The name of the team.
-        mode_updates: List of dicts with ``member_name`` and ``mode`` keys.
+        team_name: 团队名称。
+        mode_updates: 包含 ``member_name`` 和 ``mode`` 键的字典列表。
 
     Returns:
-        ``True`` if the team file was found (even if nothing changed).
+        找到团队文件返回 True（即使无变更）。
     """
     team_file = read_team_file(team_name)
     if not team_file:
@@ -569,15 +612,14 @@ async def set_member_active(
     member_name: str,
     is_active: bool,
 ) -> None:
-    """Set a team member's active status (async).
+    """设置团队成员的活跃状态（异步）。
 
-    Called when a teammate becomes idle (is_active=False) or starts a new
-    turn (is_active=True).
+    teammate 进入空闲（is_active=False）或开始新轮次（is_active=True）时调用。
 
     Args:
-        team_name: The name of the team.
-        member_name: The *name* of the member to update.
-        is_active: Whether the member is active.
+        team_name: 团队名称。
+        member_name: 待更新成员的 *name*。
+        is_active: 成员是否活跃。
     """
     team_file = await read_team_file_async(team_name)
     if not team_file:
@@ -610,28 +652,27 @@ _session_created_teams: set[str] = set()
 
 
 def register_team_for_session_cleanup(team_name: str) -> None:
-    """Mark a team as created this session so it gets cleaned up on exit.
+    """将团队标记为本会话创建，以便退出时清理。
 
-    Call this right after the initial write_team_file.
-    :func:`unregister_team_for_session_cleanup` should be called after an
-    explicit team deletion to prevent double-cleanup.
+    在初始 write_team_file 后立即调用。
+    显式删除团队后应调用 :func:`unregister_team_for_session_cleanup` 以防止重复清理。
     """
     _session_created_teams.add(team_name)
 
 
 def unregister_team_for_session_cleanup(team_name: str) -> None:
-    """Remove a team from session cleanup tracking (e.g. after explicit delete)."""
+    """从会话清理追踪中移除团队（如显式删除后）。"""
     _session_created_teams.discard(team_name)
 
 
 async def _kill_orphaned_teammate_panes(team_name: str) -> None:
-    """Best-effort kill of all pane-backed teammate panes for a team.
+    """尽力终止团队所有面板后端 teammate 的面板。
 
-    Called from :func:`cleanup_session_teams` on ungraceful leader exit
-    (SIGINT/SIGTERM).  Deleting directories alone would orphan teammate
-    processes in open tmux/iTerm2 panes; this function kills them first.
+    从 :func:`cleanup_session_teams` 在非优雅领导者退出
+    （SIGINT/SIGTERM）时调用。仅删除目录会使 teammate 进程
+    在打开的 tmux/iTerm2 面板中成为孤儿；此函数先终止它们。
 
-    Mirrors TS ``killOrphanedTeammatePanes`` in teamHelpers.ts.
+    镜像 TS teamHelpers.ts 中的 ``killOrphanedTeammatePanes``。
     """
     from openharness.swarm.registry import get_backend_registry
     from openharness.swarm.spawn_utils import is_inside_tmux
@@ -669,11 +710,11 @@ async def _kill_orphaned_teammate_panes(team_name: str) -> None:
 
 
 async def cleanup_session_teams() -> None:
-    """Clean up all teams created this session that weren't explicitly deleted.
+    """清理本会话创建但未显式删除的所有团队。
 
-    Kills orphaned teammate panes first, then removes team and task directories
-    for every team registered via :func:`register_team_for_session_cleanup`.
-    Safe to call multiple times.
+    先终止孤立的 teammate 面板，然后移除通过
+    :func:`register_team_for_session_cleanup` 注册的每个团队的目录。
+    可安全多次调用。
     """
     if not _session_created_teams:
         return
@@ -698,9 +739,9 @@ async def cleanup_session_teams() -> None:
 
 
 async def _destroy_worktree(worktree_path: str) -> None:
-    """Best-effort removal of a git worktree.
+    """尽力移除 git worktree。
 
-    Tries ``git worktree remove --force`` first; falls back to ``shutil.rmtree``.
+    先尝试 ``git worktree remove --force``；回退到 ``shutil.rmtree``。
     """
     wt = Path(worktree_path)
     git_file = wt / ".git"
@@ -744,13 +785,12 @@ async def _destroy_worktree(worktree_path: str) -> None:
 
 
 async def cleanup_team_directories(team_name: str) -> None:
-    """Clean up team and task directories for *team_name*.
+    """清理指定团队的团队目录和任务目录。
 
-    Also removes git worktrees created for team members.  Called when a
-    swarm session is terminated.
+    同时移除为团队成员创建的 git worktree。在 Swarm 会话终止时调用。
 
     Args:
-        team_name: The team name to clean up.
+        team_name: 待清理的团队名称。
     """
     # Read team file to get worktree paths BEFORE deleting the team directory
     team_file = read_team_file(team_name)
@@ -778,15 +818,14 @@ async def cleanup_team_directories(team_name: str) -> None:
 
 
 class TeamLifecycleManager:
-    """Manage the on-disk lifecycle of swarm teams.
+    """管理 Swarm 团队的磁盘生命周期。
 
-    Persists team metadata to ``~/.openharness/teams/<name>/team.json``.
-    Integrates with the mailbox system's directory layout — the team
-    directory created here is the same one that :class:`TeammateMailbox`
-    uses, so agents can be added and messaged without separate setup.
+    将团队元数据持久化到 ``~/.openharness/teams/<name>/team.json``。
+    与邮箱系统的目录布局集成——此处创建的团队目录与
+    :class:`TeammateMailbox` 使用的相同，因此无需额外设置即可
+    添加和消息智能体。
 
-    This class is stateless: every method reads from and writes to disk
-    directly, making it safe to instantiate multiple times.
+    此类是无状态的：每个方法都直接读写磁盘，因此多次实例化是安全的。
     """
 
     # ------------------------------------------------------------------
@@ -794,10 +833,10 @@ class TeamLifecycleManager:
     # ------------------------------------------------------------------
 
     def create_team(self, name: str, description: str = "") -> TeamFile:
-        """Create a new team and persist it to disk.
+        """创建新团队并持久化到磁盘。
 
         Raises:
-            ValueError: if a team with *name* already exists.
+            ValueError: 同名团队已存在时。
         """
         path = _team_file_path(name)
         if path.exists():
@@ -812,10 +851,10 @@ class TeamLifecycleManager:
         return team
 
     def delete_team(self, name: str) -> None:
-        """Remove a team directory and all its contents (mailboxes included).
+        """移除团队目录及其所有内容（包括邮箱）。
 
         Raises:
-            ValueError: if the team does not exist.
+            ValueError: 团队不存在时。
         """
         team_dir = get_team_dir(name)
         team_file = team_dir / _TEAM_FILE_NAME
@@ -824,7 +863,7 @@ class TeamLifecycleManager:
         shutil.rmtree(team_dir)
 
     def get_team(self, name: str) -> TeamFile | None:
-        """Return the TeamFile for *name*, or ``None`` if it does not exist."""
+        """返回指定名称的 TeamFile，不存在则返回 ``None``。"""
         path = _team_file_path(name)
         if not path.exists():
             return None
@@ -834,7 +873,7 @@ class TeamLifecycleManager:
             return None
 
     def list_teams(self) -> list[TeamFile]:
-        """Return all teams found in ``~/.openharness/teams/``, sorted by name."""
+        """返回 ``~/.openharness/teams/`` 中找到的所有团队，按名称排序。"""
         base = Path.home() / ".openharness" / "teams"
         if not base.exists():
             return []
@@ -855,12 +894,12 @@ class TeamLifecycleManager:
     # ------------------------------------------------------------------
 
     def add_member(self, team_name: str, member: TeamMember) -> TeamFile:
-        """Add *member* to *team_name* and persist.
+        """将 *member* 添加到 *team_name* 并持久化。
 
-        If a member with the same ``agent_id`` already exists it is replaced.
+        若同 ``agent_id`` 的成员已存在则替换。
 
         Raises:
-            ValueError: if the team does not exist.
+            ValueError: 团队不存在时。
         """
         path = _team_file_path(team_name)
         team = self._require_team(team_name, path)
@@ -869,10 +908,10 @@ class TeamLifecycleManager:
         return team
 
     def remove_member(self, team_name: str, agent_id: str) -> TeamFile:
-        """Remove the member with *agent_id* from *team_name* and persist.
+        """从 *team_name* 移除指定 *agent_id* 的成员并持久化。
 
         Raises:
-            ValueError: if the team or member does not exist.
+            ValueError: 团队或成员不存在时。
         """
         path = _team_file_path(team_name)
         team = self._require_team(team_name, path)
@@ -891,13 +930,13 @@ class TeamLifecycleManager:
     def set_member_mode(
         self, team_name: str, member_name: str, mode: str
     ) -> bool:
-        """Set a team member's permission mode."""
+        """设置团队成员的权限模式。"""
         return set_member_mode(team_name, member_name, mode)
 
     async def set_member_active(
         self, team_name: str, member_name: str, is_active: bool
     ) -> None:
-        """Set a team member's active status."""
+        """设置团队成员的活跃状态。"""
         await set_member_active(team_name, member_name, is_active)
 
     # ------------------------------------------------------------------
@@ -905,6 +944,15 @@ class TeamLifecycleManager:
     # ------------------------------------------------------------------
 
     def _require_team(self, name: str, path: Path) -> TeamFile:
-        if not path.exists():
-            raise ValueError(f"Team '{name}' does not exist")
-        return TeamFile.load(path)
+        """加载团队文件，若不存在则抛出 ValueError。
+
+        Args:
+            name: 团队名称（用于错误消息）。
+            path: team.json 的路径。
+
+        Returns:
+            加载的 :class:`TeamFile` 实例。
+
+        Raises:
+            ValueError: 团队文件不存在时。
+        """

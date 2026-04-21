@@ -1,4 +1,9 @@
-"""Tool for creating local cron-style jobs."""
+"""本地 Cron 定时任务创建工具。
+
+本模块提供 CronCreateTool，用于创建或替换本地 cron 风格的定时任务。
+使用标准 5 字段 cron 表达式（分 时 日 月 周）定义调度计划。
+创建的任务需通过 'oh cron start' 启动调度守护进程才会实际执行。
+"""
 
 from __future__ import annotations
 
@@ -9,7 +14,15 @@ from openharness.tools.base import BaseTool, ToolExecutionContext, ToolResult
 
 
 class CronCreateToolInput(BaseModel):
-    """Arguments for cron job creation."""
+    """Cron 任务创建工具的输入参数。
+
+    Attributes:
+        name: 唯一的 cron 任务名称
+        schedule: Cron 调度表达式（如 '*/5 * * * *' 表示每 5 分钟）
+        command: 触发时执行的 Shell 命令
+        cwd: 可选的工作目录覆盖
+        enabled: 任务是否启用，默认为 True
+    """
 
     name: str = Field(description="Unique cron job name")
     schedule: str = Field(
@@ -24,7 +37,10 @@ class CronCreateToolInput(BaseModel):
 
 
 class CronCreateTool(BaseTool):
-    """Create or replace a local cron job."""
+    """创建或替换本地 cron 定时任务的工具。
+
+    使用标准 5 字段 cron 表达式定义调度计划。
+    """
 
     name = "cron_create"
     description = (
@@ -38,6 +54,17 @@ class CronCreateTool(BaseTool):
         arguments: CronCreateToolInput,
         context: ToolExecutionContext,
     ) -> ToolResult:
+        """执行 cron 任务创建。
+
+        首先验证 cron 表达式格式，然后创建或替换任务。
+
+        Args:
+            arguments: 包含任务名称、调度表达式和命令的输入参数
+            context: 工具执行上下文
+
+        Returns:
+            创建成功的确认信息或表达式验证错误
+        """
         if not validate_cron_expression(arguments.schedule):
             return ToolResult(
                 output=(

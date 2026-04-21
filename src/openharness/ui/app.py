@@ -1,4 +1,16 @@
-"""Interactive session entry points."""
+"""交互式会话入口点。
+
+本模块提供 OpenHarness 的三种运行模式入口：
+
+- run_repl：默认交互式应用（React TUI 或纯后端宿主模式）
+- run_print_mode：非交互式打印模式（提交提示→流式输出→退出）
+- run_task_worker：stdin 驱动的无头 worker（后台代理任务进程）
+
+此外还包含协调者模式下异步代理任务的通知处理逻辑：
+- 解码任务 worker 的 stdin 输入
+- 等待并格式化异步代理完成通知
+- 将通知作为后续用户消息提交给引擎
+"""
 
 from __future__ import annotations
 
@@ -23,14 +35,15 @@ from openharness.ui.runtime import build_runtime, close_runtime, handle_line, st
 
 
 _TERMINAL_TASK_STATUSES = frozenset({"completed", "failed", "killed"})
+"""异步代理任务的终态状态集合，到达这些状态表示任务已结束。"""
 
 
 def _decode_task_worker_line(raw: str) -> str:
-    """Normalize one stdin line for the headless task worker.
+    """为无头任务 worker 规范化一行 stdin 输入。
 
-    Task-manager driven agent workers receive either:
-    - a plain text line (initial prompt or simple follow-up), or
-    - a JSON object from ``send_message`` / teammate backends with a ``text`` field.
+    任务管理器驱动的代理 worker 可能接收：
+    - 纯文本行（初始提示或简单后续）
+    - 来自 send_message / teammate 后端的 JSON 对象（含 text 字段）
     """
     stripped = raw.strip()
     if not stripped:
@@ -47,6 +60,7 @@ def _decode_task_worker_line(raw: str) -> str:
 
 
 def _async_agent_task_entries(tool_metadata: dict[str, object] | None) -> list[dict[str, object]]:
+    """从工具元数据中提取异步代理任务条目列表。"""
     if not isinstance(tool_metadata, dict):
         return []
     value = tool_metadata.get("async_agent_tasks")
@@ -56,6 +70,10 @@ def _async_agent_task_entries(tool_metadata: dict[str, object] | None) -> list[d
 
 
 def _pending_async_agent_entries(tool_metadata: dict[str, object] | None) -> list[dict[str, object]]:
+    """筛选尚未发送通知的异步代理任务条目。
+
+    过滤条件：有 task_id 且 notification_sent 不为 True。
+    """
     pending: list[dict[str, object]] = []
     for entry in _async_agent_task_entries(tool_metadata):
         task_id = str(entry.get("task_id") or "").strip()
@@ -68,6 +86,7 @@ def _pending_async_agent_entries(tool_metadata: dict[str, object] | None) -> lis
 
 
 def _build_async_task_summary(entry: dict[str, object], *, task_status: str, return_code: int | None) -> str:
+    """根据任务条目、状态和退出码构建异步代理任务的摘要文本。"""
     description = str(entry.get("description") or entry.get("agent_id") or "background task").strip()
     if task_status == "completed":
         return f'Agent "{description}" completed'
@@ -83,6 +102,12 @@ async def _wait_for_completed_async_agent_entries(
     *,
     poll_interval_seconds: float = 0.1,
 ) -> list[dict[str, object]]:
+    """轮询等待异步代理任务到达终态。
+
+    持续检查所有未通知的任务条目，直到至少有一个到达终态
+    （completed/failed/killed）或全部标记为 missing。
+    返回已完成任务的条目列表。
+    """
     manager = get_task_manager()
     while True:
         pending = _pending_async_agent_entries(tool_metadata)
@@ -106,6 +131,12 @@ async def _wait_for_completed_async_agent_entries(
 
 
 def _format_completed_task_notifications(completed: list[dict[str, object]]) -> str:
+    """将已完成任务的条目格式化为 XML 通知消息。
+
+    使用 format_task_notification 为每个完成任务生成 <task-notification> XML，
+    读取任务输出（最多 8000 字节），标记已通知状态。
+    多个通知之间用空行分隔。
+    """
     manager = get_task_manager()
     notifications: list[str] = []
     for entry in completed:
@@ -142,6 +173,11 @@ async def _submit_print_follow_up(
     print_system,
     render_event,
 ) -> None:
+    """将后续消息提交给引擎并渲染结果（用于打印模式）。
+
+    重新构建系统提示词，提交消息，处理 MaxTurnsExceeded，
+    保存会话快照。
+    """
     from openharness.ui.runtime import _format_pending_tool_results
 
     settings = bundle.current_settings()
@@ -182,6 +218,11 @@ async def _drain_coordinator_async_agents(
     print_system,
     render_event,
 ) -> None:
+    """排空协调者模式下的异步代理任务通知。
+
+    循环等待未通知的异步代理任务完成，将完成通知作为后续消息
+    提交给引擎处理，直到所有任务都已通知或无需等待。
+    """
     engine = getattr(bundle, "engine", None)
     if engine is None:
         return
@@ -222,7 +263,11 @@ async def run_repl(
     restore_tool_metadata: dict[str, object] | None = None,
     permission_mode: str | None = None,
 ) -> None:
-    """Run the default OpenHarness interactive application (React TUI)."""
+    """运行默认的 OpenHarness 交互式应用（React TUI）。
+
+    当 backend_only=True 时，仅启动后端宿主进程（供 React 前端连接）；
+    否则启动完整的 React TUI 前端（Ink 终端 UI），前端自动生成后端进程。
+    """
     if backend_only:
         await run_backend_host(
             cwd=cwd,
@@ -267,11 +312,11 @@ async def run_task_worker(
     api_client: SupportsStreamingMessages | None = None,
     permission_mode: str | None = None,
 ) -> None:
-    """Run a stdin-driven headless worker for background agent tasks.
+    """运行 stdin 驱动的无头 worker，用于后台代理任务。
 
-    This mode exists for subprocess teammates and other task-manager managed
-    agent processes. It intentionally avoids the React TUI / Ink path so it
-    can run without a controlling TTY.
+    此模式专为子进程 teammate 和其他任务管理器驱动的代理进程设计，
+    故意避开 React TUI / Ink 路径，无需控制 TTY 即可运行。
+    从 stdin 读取一行输入，处理后输出结果并退出。
     """
 
     async def _noop_permission(_tool_name: str, _reason: str) -> bool:
@@ -353,7 +398,13 @@ async def run_print_mode(
     permission_mode: str | None = None,
     max_turns: int | None = None,
 ) -> None:
-    """Non-interactive mode: submit prompt, stream output, exit."""
+    """非交互模式：提交提示，流式输出，退出。
+
+    支持三种输出格式：
+    - text：纯文本流式输出到 stdout
+    - json：完成后输出 JSON 结果对象
+    - stream-json：逐事件输出 JSON 行
+    """
     from openharness.engine.stream_events import (
         AssistantTextDelta,
         AssistantTurnComplete,

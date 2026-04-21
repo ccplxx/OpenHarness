@@ -1,4 +1,13 @@
-"""Tool for spawning local agent tasks."""
+"""本地代理（Agent）生成工具。
+
+本模块提供 AgentTool，用于在本地或远程生成子代理进程。支持三种模式：
+- local_agent：本地子进程代理
+- remote_agent：远程代理
+- in_process_teammate：进程内队友模式
+
+通过 subprocess 后端生成代理，确保代理任务被 BackgroundTaskManager 注册，
+可通过 task 系列工具进行查询和管理。
+"""
 
 from __future__ import annotations
 
@@ -16,7 +25,17 @@ logger = logging.getLogger(__name__)
 
 
 class AgentToolInput(BaseModel):
-    """Arguments for local agent spawning."""
+    """本地代理生成工具的输入参数。
+
+    Attributes:
+        description: 委派工作的简短描述
+        prompt: 传递给本地代理的完整提示词
+        subagent_type: 代理类型，用于查找代理定义（如 'general-purpose'、'Explore'、'worker'）
+        model: 可选的模型名称覆盖
+        command: 可选的生成命令覆盖
+        team: 可选的团队名称，将代理附加到指定团队
+        mode: 代理模式：local_agent（本地子进程）、remote_agent（远程）或 in_process_teammate（进程内队友）
+    """
 
     description: str = Field(description="Short description of the delegated work")
     prompt: str = Field(description="Full prompt for the local agent")
@@ -34,13 +53,29 @@ class AgentToolInput(BaseModel):
 
 
 class AgentTool(BaseTool):
-    """Spawn a local agent subprocess."""
+    """生成本地代理子进程的工具。
+
+    通过 subprocess 后端生成代理，确保代理任务被 BackgroundTaskManager 注册，
+    可通过 task 系列工具查询。支持将代理注册到团队中。
+    """
 
     name = "agent"
     description = "Spawn a local background agent task."
     input_model = AgentToolInput
 
     async def execute(self, arguments: AgentToolInput, context: ToolExecutionContext) -> ToolResult:
+        """执行代理生成。
+
+        验证模式参数，查找代理定义（若指定），通过 subprocess 后端生成代理进程，
+        并可选地将代理注册到团队。
+
+        Args:
+            arguments: 代理生成参数
+            context: 工具执行上下文
+
+        Returns:
+            包含 agent_id、task_id、backend_type 和 description 的 ToolResult
+        """
         if arguments.mode not in {"local_agent", "remote_agent", "in_process_teammate"}:
             return ToolResult(
                 output="Invalid mode. Use local_agent, remote_agent, or in_process_teammate.",

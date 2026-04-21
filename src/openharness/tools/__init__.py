@@ -1,4 +1,10 @@
-"""Built-in tool registration."""
+"""OpenHarness 内置工具注册模块。
+
+本模块负责将所有内置工具实例化并注册到默认工具注册表中。
+同时，当 MCP 管理器可用时，自动注册 MCP 资源列表工具、
+MCP 资源读取工具以及所有 MCP 服务器提供的工具适配器。
+通过 create_default_tool_registry 函数创建完整的工具注册表。
+"""
 
 from openharness.tools.ask_user_question_tool import AskUserQuestionTool
 from openharness.tools.agent_tool import AgentTool
@@ -44,7 +50,18 @@ from openharness.tools.web_search_tool import WebSearchTool
 
 
 def create_default_tool_registry(mcp_manager=None) -> ToolRegistry:
-    """Return the default built-in tool registry."""
+    """创建默认内置工具注册表。
+
+    实例化所有内置工具并注册。当 MCP 管理器可用时，
+    额外注册 MCP 资源列表工具、MCP 资源读取工具
+    以及所有 MCP 服务器提供的工具适配器。
+
+    Args:
+        mcp_manager: 可选的 MCP 客户端管理器实例
+
+    Returns:
+        包含所有内置工具的 ToolRegistry 实例
+    """
     registry = ToolRegistry()
     for tool in (
         BashTool(),

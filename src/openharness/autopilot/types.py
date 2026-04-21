@@ -1,4 +1,8 @@
-"""Repo autopilot data models."""
+"""仓库自动驾驶模块的数据模型定义。
+
+本模块定义了 autopilot 系统中所有核心数据结构，包括任务状态枚举、
+任务来源枚举、任务卡片、日志条目、注册表、验证步骤和执行结果等 Pydantic 模型。
+"""
 
 from __future__ import annotations
 
@@ -21,6 +25,12 @@ RepoTaskStatus = Literal[
     "rejected",
     "superseded",
 ]
+"""仓库任务的生命周期状态类型。
+
+定义了任务从入队到终态的完整状态流转路径：
+queued → accepted → preparing → running → verifying → pr_open → waiting_ci → completed/merged/failed。
+还包含 repairing（修复重试）、rejected（人工拒绝）、superseded（被新任务取代）等状态。
+"""
 RepoTaskSource = Literal[
     "ohmo_request",
     "manual_idea",
@@ -28,10 +38,24 @@ RepoTaskSource = Literal[
     "github_pr",
     "claude_code_candidate",
 ]
+"""仓库任务的来源类型。
+
+标识任务的触发渠道：
+- ohmo_request: 由 ohmo 助手发起的请求
+- manual_idea: 人工手动提交的想法
+- github_issue: 来自 GitHub Issue 的任务
+- github_pr: 来自 GitHub PR 的任务
+- claude_code_candidate: 来自 claude-code 的候选评估任务
+"""
 
 
 class RepoTaskCard(BaseModel):
-    """One normalized repo-level work item."""
+    """标准化的仓库级工作项卡片。
+
+    每个卡片代表一个独立的自动驾驶任务，包含唯一标识、指纹、标题、正文、
+    来源信息、当前状态、评分及评分理由、标签和元数据等字段。
+    指纹用于去重，评分用于优先级排序。
+    """
 
     id: str
     fingerprint: str
@@ -49,7 +73,12 @@ class RepoTaskCard(BaseModel):
 
 
 class RepoJournalEntry(BaseModel):
-    """Append-only repo journal event."""
+    """仅追加的仓库日志事件。
+
+    记录 autopilot 系统中的每一次重要操作（如任务入队、状态变更、扫描结果等），
+    以时间戳、事件类型、摘要和可选的任务 ID、元数据描述。日志以 JSONL 格式持久化，
+    用于审计追踪和上下文重建。
+    """
 
     timestamp: float
     kind: str
@@ -59,7 +88,11 @@ class RepoJournalEntry(BaseModel):
 
 
 class RepoAutopilotRegistry(BaseModel):
-    """Full registry payload."""
+    """仓库自动驾驶的完整注册表载荷。
+
+    包含版本号、最后更新时间和所有任务卡片列表，
+    是 autopilot 系统的核心持久化数据结构，以 JSON 格式存储在项目目录中。
+    """
 
     version: int = 1
     updated_at: float = 0.0
@@ -67,7 +100,11 @@ class RepoAutopilotRegistry(BaseModel):
 
 
 class RepoVerificationStep(BaseModel):
-    """One verification command result."""
+    """单条验证命令的执行结果。
+
+    记录一次验证命令（如 pytest、ruff check、tsc）的执行情况，
+    包括命令内容、返回码、状态（success/failed/skipped/error）以及 stdout/stderr 输出。
+    """
 
     command: str
     returncode: int
@@ -77,7 +114,12 @@ class RepoVerificationStep(BaseModel):
 
 
 class RepoRunResult(BaseModel):
-    """Result of one autopilot execution attempt."""
+    """单次自动驾驶执行尝试的结果。
+
+    记录一次任务执行的完整输出，包括关联卡片 ID、最终状态、
+    助手摘要、运行报告路径、验证报告路径、验证步骤列表、尝试次数、
+    worktree 路径以及关联的 PR 信息。
+    """
 
     card_id: str
     status: RepoTaskStatus

@@ -1,4 +1,11 @@
-"""Simple web search tool."""
+"""网页搜索工具。
+
+本模块提供 WebSearchTool，用于执行网页搜索并返回紧凑的搜索结果。
+默认使用 DuckDuckGo HTML 搜索接口，也支持自定义搜索后端。
+返回结果包含标题、URL 和摘要片段。
+通过解析 HTML 页面中的搜索结果锚点和摘要元素提取信息。
+该工具为只读工具。
+"""
 
 from __future__ import annotations
 
@@ -14,7 +21,13 @@ from openharness.utils.network_guard import NetworkGuardError, fetch_public_http
 
 
 class WebSearchToolInput(BaseModel):
-    """Arguments for a web search."""
+    """网页搜索工具的输入参数。
+
+    Attributes:
+        query: 搜索查询词
+        max_results: 最大结果数，范围 1-10，默认 5
+        search_url: 可选的搜索端点 URL 覆盖
+    """
 
     query: str = Field(description="Search query")
     max_results: int = Field(default=5, ge=1, le=10, description="Maximum number of results")
@@ -25,21 +38,34 @@ class WebSearchToolInput(BaseModel):
 
 
 class WebSearchTool(BaseTool):
-    """Run a web search and return compact top results."""
+    """执行网页搜索并返回紧凑搜索结果的工具。
+
+    默认使用 DuckDuckGo HTML 搜索接口，支持自定义搜索后端。
+    """
 
     name = "web_search"
     description = "Search the web and return compact top results with titles, URLs, and snippets."
     input_model = WebSearchToolInput
 
     def is_read_only(self, arguments: WebSearchToolInput) -> bool:
-        del arguments
-        return True
+        """该工具为只读，不会修改任何状态。"""
 
     async def execute(
         self,
         arguments: WebSearchToolInput,
         context: ToolExecutionContext,
     ) -> ToolResult:
+        """执行网页搜索。
+
+        向搜索端点发送查询请求，解析 HTML 响应中的搜索结果。
+
+        Args:
+            arguments: 包含查询词和结果限制的输入参数
+            context: 工具执行上下文（未使用）
+
+        Returns:
+            格式化的搜索结果（编号、标题、URL、摘要）
+        """
         del context
         endpoint = arguments.search_url or "https://html.duckduckgo.com/html/"
         try:
@@ -67,6 +93,18 @@ class WebSearchTool(BaseTool):
 
 
 def _parse_search_results(body: str, *, limit: int) -> list[dict[str, str]]:
+    """解析搜索结果 HTML 页面。
+
+    从 HTML 中提取搜索结果的锚点（标题和链接）和摘要片段，
+    返回包含 title、url、snippet 的字典列表。
+
+    Args:
+        body: 搜索结果 HTML 页面内容
+        limit: 最大结果数
+
+    Returns:
+        搜索结果字典列表
+    """
     snippets = [
         _clean_html(match.group("snippet"))
         for match in re.finditer(
@@ -104,6 +142,17 @@ def _parse_search_results(body: str, *, limit: int) -> list[dict[str, str]]:
 
 
 def _normalize_result_url(raw_url: str) -> str:
+    """规范化搜索结果 URL。
+
+    对于 DuckDuckGo 的重定向 URL（/l/ 路径），提取实际目标 URL；
+    其他 URL 原样返回。
+
+    Args:
+        raw_url: 原始 URL 字符串
+
+    Returns:
+        规范化后的 URL
+    """
     parsed = urlparse(raw_url)
     if parsed.netloc.endswith("duckduckgo.com") and parsed.path.startswith("/l/"):
         target = parse_qs(parsed.query).get("uddg", [""])[0]
@@ -112,6 +161,16 @@ def _normalize_result_url(raw_url: str) -> str:
 
 
 def _clean_html(fragment: str) -> str:
+    """清洗 HTML 片段为纯文本。
+
+    去除 HTML 标签、解码 HTML 实体、压缩空白字符。
+
+    Args:
+        fragment: HTML 片段字符串
+
+    Returns:
+        清洗后的纯文本
+    """
     text = re.sub(r"(?s)<[^>]+>", " ", fragment)
     text = html.unescape(text)
     text = re.sub(r"\s+", " ", text).strip()

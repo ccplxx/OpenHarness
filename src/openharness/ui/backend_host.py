@@ -1,4 +1,17 @@
-"""JSON-lines backend host for the React terminal frontend."""
+"""React 终端前端的 JSON-lines 后端宿主。
+
+本模块实现 ReactBackendHost 类，通过结构化的 stdin/stdout JSON-lines 协议
+驱动 OpenHarness 运行时，是 React TUI 前端与 Python 引擎之间的桥梁。
+
+核心功能：
+- 从 stdin 读取 FrontendRequest（用户输入、权限响应、命令选择）
+- 通过 BackendEvent 向 stdout 输出结构化事件（文本增量、工具事件、状态快照等）
+- 管理权限确认和问题回答的异步 Future 机制
+- 支持 TodoWrite 的待办更新和计划模式变更事件
+- 提供多种配置选择器（模型、提供商、权限模式、主题等）
+
+协议格式：每行输出以 "OHJSON:" 前缀 + JSON 序列化的 BackendEvent。
+"""
 
 from __future__ import annotations
 
@@ -38,11 +51,16 @@ log = logging.getLogger(__name__)
 log = logging.getLogger(__name__)
 
 _PROTOCOL_PREFIX = "OHJSON:"
+"""后端事件输出的行前缀，用于前端识别协议消息。"""
 
 
 @dataclass(frozen=True)
 class BackendHostConfig:
-    """Configuration for one backend host session."""
+    """单次后端宿主会话的配置。
+
+    包含模型、轮次限制、API 认证、权限模式、会话恢复数据等
+    全部初始化参数。
+    """
 
     model: str | None = None
     max_turns: int | None = None
@@ -63,7 +81,15 @@ class BackendHostConfig:
 
 
 class ReactBackendHost:
-    """Drive the OpenHarness runtime over a structured stdin/stdout protocol."""
+    """通过结构化 stdin/stdout 协议驱动 OpenHarness 运行时的后端宿主。
+
+    核心工作流：
+    1. 构建运行时、发送 ready 事件
+    2. 从 stdin 异步读取前端请求
+    3. 分发请求：submit_line（用户输入）、权限/问题响应、命令选择等
+    4. 将引擎流式事件转换为 BackendEvent 输出到 stdout
+    5. 管理权限确认和问题回答的异步等待
+    """
 
     def __init__(self, config: BackendHostConfig) -> None:
         self._config = config
@@ -79,6 +105,12 @@ class ReactBackendHost:
         self._last_tool_inputs: dict[str, dict] = {}
 
     async def run(self) -> int:
+        """运行后端宿主主循环。
+
+        初始化运行时、发送 ready 和状态快照事件，
+        然后循环读取前端请求并分发处理，直到收到 shutdown 请求
+        或处理函数返回应退出信号。返回退出码 0。
+        """
         self._bundle = await build_runtime(
             model=self._config.model,
             max_turns=self._config.max_turns,
@@ -166,6 +198,12 @@ class ReactBackendHost:
         return 0
 
     async def _read_requests(self) -> None:
+        """异步从 stdin 读取前端请求并放入请求队列。
+
+        解析 JSON 行为 FrontendRequest，直接处理权限/问题响应
+        （通过 Future 机制），其他请求入队供主循环处理。
+        stdin EOF 时发送 shutdown 请求。
+        """
         while True:
             raw = await asyncio.to_thread(sys.stdin.buffer.readline)
             if not raw:
@@ -192,6 +230,12 @@ class ReactBackendHost:
             await self._request_queue.put(request)
 
     async def _process_line(self, line: str, *, transcript_line: str | None = None) -> bool:
+        """处理一行用户输入并返回是否应继续会话。
+
+        发送用户对话条目，委托 handle_line 处理，
+        将流式事件转换为 BackendEvent 输出，
+        处理待办更新、计划模式变更等特殊事件。
+        """
         assert self._bundle is not None
         await self._emit(
             BackendEvent(type="transcript_item", item=TranscriptItem(role="user", text=transcript_line or line))
@@ -312,6 +356,7 @@ class ReactBackendHost:
         return should_continue
 
     async def _apply_select_command(self, command_name: str, value: str) -> bool:
+        """应用选择器命令（如 /model、/theme 等）并返回是否应继续。"""
         command = command_name.strip().lstrip("/").lower()
         selected = value.strip()
         line = self._build_select_command_line(command, selected)
@@ -322,6 +367,11 @@ class ReactBackendHost:
         return await self._process_line(line, transcript_line=f"/{command}")
 
     def _build_select_command_line(self, command: str, value: str) -> str | None:
+        """将选择器命令名和值构建为斜杠命令行字符串。
+
+        如 ("model", "sonnet") → "/model sonnet"。
+        未知命令返回 None。
+        """
         if command == "provider":
             return f"/provider {value}"
         if command == "resume":
@@ -349,6 +399,7 @@ class ReactBackendHost:
         return None
 
     def _status_snapshot(self) -> BackendEvent:
+        """生成当前状态快照事件，包含应用状态、MCP 和 Bridge 会话信息。"""
         assert self._bundle is not None
         return BackendEvent.status_snapshot(
             state=self._bundle.app_state.get(),
@@ -357,7 +408,10 @@ class ReactBackendHost:
         )
 
     async def _emit_todo_update_from_output(self, output: str) -> None:
-        """Emit a todo_update event by extracting markdown checklist from tool output."""
+        """从工具输出中提取 Markdown 清单并发出 todo_update 事件。
+
+        查找以 "- [" 开头的行作为清单条目。
+        """
         # TodoWrite tools typically echo back the written content
         # We look for markdown checklist patterns in the output
         lines = output.splitlines()
@@ -367,7 +421,7 @@ class ReactBackendHost:
             await self._emit(BackendEvent(type="todo_update", todo_markdown=markdown))
 
     def _emit_swarm_status(self, teammates: list[dict], notifications: list[dict] | None = None) -> None:
-        """Emit a swarm_status event synchronously (schedule as coroutine)."""
+        """同步发出 swarm_status 事件（调度为协程任务）。"""
         import asyncio
         loop = asyncio.get_event_loop()
         loop.create_task(
@@ -375,6 +429,10 @@ class ReactBackendHost:
         )
 
     async def _handle_list_sessions(self) -> None:
+        """处理 /resume 命令的会话列表请求。
+
+        列出最近 10 个会话快照，以 select_request 事件发送给前端。
+        """
         import time as _time
 
         assert self._bundle is not None
@@ -396,6 +454,11 @@ class ReactBackendHost:
         )
 
     async def _handle_select_command(self, command_name: str) -> None:
+        """处理选择器命令请求，生成对应选项列表的 select_request 事件。
+
+        支持：provider、permissions、theme、output-style、effort、
+        passes、turns、fast、vim、voice、model 等选择器。
+        """
         assert self._bundle is not None
         command = command_name.strip().lstrip("/").lower()
         if command == "resume":
@@ -602,6 +665,12 @@ class ReactBackendHost:
         await self._emit(BackendEvent(type="error", message=f"No selector available for /{command}"))
 
     def _model_select_options(self, current_model: str, provider: str, allowed_models: list[str] | None = None) -> list[dict[str, object]]:
+        """生成模型选择器的选项列表。
+
+        优先使用配置文件允许的模型列表，否则根据提供商类型
+        （Anthropic/OpenAI/Moonshot/DashScope/Gemini/MiniMax 等）
+        生成推荐模型选项。
+        """
         if allowed_models:
             return [
                 {
@@ -682,6 +751,11 @@ class ReactBackendHost:
         return options
 
     async def _ask_permission(self, tool_name: str, reason: str) -> bool:
+        """通过前端模态弹窗请求用户权限确认。
+
+        发送 modal_request 事件，等待前端返回 permission_response，
+        超时 300 秒自动拒绝。
+        """
         async with self._permission_lock:
             request_id = uuid4().hex
             future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
@@ -706,6 +780,7 @@ class ReactBackendHost:
                 self._permission_requests.pop(request_id, None)
 
     async def _ask_question(self, question: str) -> str:
+        """通过前端模态弹窗向用户提问并等待回答。"""
         request_id = uuid4().hex
         future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self._question_requests[request_id] = future
@@ -725,6 +800,10 @@ class ReactBackendHost:
             self._question_requests.pop(request_id, None)
 
     async def _emit(self, event: BackendEvent) -> None:
+        """将 BackendEvent 序列化为 JSON 行并写入 stdout。
+
+        使用 "OHJSON:" 前缀 + JSON + 换行格式，通过写锁保证原子性。
+        """
         log.debug("emit event: type=%s tool=%s", event.type, getattr(event, "tool_name", None))
         async with self._write_lock:
             payload = _PROTOCOL_PREFIX + event.model_dump_json() + "\n"
@@ -756,7 +835,11 @@ async def run_backend_host(
     extra_skill_dirs: tuple[str | Path, ...] = (),
     extra_plugin_roots: tuple[str | Path, ...] = (),
 ) -> int:
-    """Run the structured React backend host."""
+    """运行结构化 React 后端宿主进程。
+
+    构建配置、创建 ReactBackendHost 实例并运行主循环。
+    若指定 cwd 则先切换工作目录。返回进程退出码。
+    """
     if cwd:
         os.chdir(cwd)
     host = ReactBackendHost(

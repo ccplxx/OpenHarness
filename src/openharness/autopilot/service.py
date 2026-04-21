@@ -1,4 +1,10 @@
-"""Project-level repo autopilot state, intake, and execution helpers."""
+"""仓库自动驾驶的核心服务层实现。
+
+本模块提供 RepoAutopilotStore 类，是 autopilot 系统的主要入口，
+负责：任务卡片的入队/查询/评分/状态管理、来源扫描（GitHub Issue/PR/claude-code）、
+隔离式任务执行（worktree + agent loop）、本地验证门控、GitHub PR 创建与 CI 轮询、
+自动合并判定、日志记录、活跃上下文重建、仪表盘导出等完整生命周期管理。
+"""
 
 from __future__ import annotations
 
@@ -45,8 +51,15 @@ _SOURCE_BASE_SCORES: dict[RepoTaskSource, int] = {
     "github_pr": 85,
     "claude_code_candidate": 45,
 }
+"""不同任务来源的基础评分映射。
+
+ohmo_request 优先级最高（100），claude_code_candidate 最低（45），
+用于任务卡片的优先级排序。
+"""
 _BUG_HINTS = ("bug", "fix", "failure", "broken", "regression", "crash", "error", "issue")
+"""文本中暗示 bug 相关的关键词元组，用于评分时识别 bug 类任务。"""
 _URGENT_HINTS = ("urgent", "p0", "p1", "high", "critical", "blocker")
+"""文本中暗示紧急程度的关键词元组，用于评分时提升优先级。"""
 
 _DEFAULT_AUTOPILOT_POLICY = {
     "intake": {
@@ -85,6 +98,8 @@ _DEFAULT_AUTOPILOT_POLICY = {
         "stop_on": ["agent_runtime_error", "git_error", "permission_error", "merge_conflict"],
     },
 }
+"""默认的自动驾驶策略配置，涵盖 intake（入队）、decision（决策）、
+execution（执行）、github（GitHub 集成）和 repair（修复重试）五大策略区块。"""
 _DEFAULT_VERIFICATION_POLICY = {
     "gates": [
         "fast_gate",
@@ -102,14 +117,20 @@ _DEFAULT_VERIFICATION_POLICY = {
     ],
     "require_tests_before_merge": True,
 }
+"""默认的验证策略配置，定义验证门控名称、验证命令列表以及合并前是否必须通过测试。"""
 _DEFAULT_RELEASE_POLICY = {
     "merge_requires_human": True,
     "release_requires_human": True,
     "auto_revert_on_failed_verification": False,
 }
+"""默认的发布策略配置，定义合并/发布是否需要人工确认，以及验证失败是否自动回退。"""
 
 
 def _shorten(text: str, *, limit: int = 120) -> str:
+    """将文本压缩到指定长度，超长时截断并添加省略号。
+
+    先将文本中的多余空白合并为单个空格，若长度超过 limit 则截断并在末尾添加 '...'。
+    """
     normalized = " ".join(text.split())
     if len(normalized) <= limit:
         return normalized
@@ -117,18 +138,25 @@ def _shorten(text: str, *, limit: int = 120) -> str:
 
 
 def _safe_text(value: object) -> str:
+    """将任意值安全转换为字符串，None 返回空字符串，否则去首尾空白。"""
     if value is None:
         return ""
     return str(value).strip()
 
 
 def _json_default(value: object) -> object:
+    """JSON 序列化的默认回调，将 Path 对象和其他类型转为字符串。"""
     if isinstance(value, Path):
         return str(value)
     return str(value)
 
 
 def _looks_available(command: str, cwd: Path) -> bool:
+    """根据命令内容和项目目录结构判断该验证命令是否可用。
+
+    例如 'uv ' 前缀命令需要 pyproject.toml、'tsc' 需要 frontend/terminal/package.json。
+    无法判断时默认返回 True。
+    """
     lowered = command.lower()
     if lowered.startswith("uv "):
         return (cwd / "pyproject.toml").exists()
@@ -142,6 +170,10 @@ def _looks_available(command: str, cwd: Path) -> bool:
 
 
 def _source_ref_number(source_ref: str, prefix: str) -> int | None:
+    """从 source_ref 字符串中解析指定前缀的编号。
+
+    source_ref 格式为 'prefix:number'，成功返回整数编号，格式不匹配返回 None。
+    """
     normalized = source_ref.strip()
     if not normalized.startswith(f"{prefix}:"):
         return None
@@ -152,13 +184,25 @@ def _source_ref_number(source_ref: str, prefix: str) -> int | None:
 
 
 def _bilingual_lines(zh: str, en: str) -> str:
+    """将中英文两行文本拼接为双语字符串，用于 GitHub 评论的双语输出。"""
     return f"{zh}\n{en}".strip()
 
 
 class RepoAutopilotStore:
-    """Persist and query project-level autopilot state."""
+    """仓库自动驾驶的持久化存储与核心操作类。
+
+    负责管理项目级 autopilot 的完整生命周期，包括：
+    - 任务卡片的入队、查询、状态更新和评分
+    - 多来源扫描（GitHub Issue/PR、claude-code 候选）
+    - 隔离式 worktree 任务执行与 agent loop 调用
+    - 本地验证门控与 CI 轮询
+    - PR 创建/更新、自动合并判定
+    - 日志记录与活跃上下文重建
+    - 仪表盘静态站点导出
+    """
 
     def __init__(self, cwd: str | Path) -> None:
+        """初始化 RepoAutopilotStore，设置项目路径并确保目录布局和默认策略文件存在。"""
         self._cwd = Path(cwd).resolve()
         self._registry_path = get_project_autopilot_registry_path(self._cwd)
         self._journal_path = get_project_repo_journal_path(self._cwd)
@@ -168,27 +212,33 @@ class RepoAutopilotStore:
 
     @property
     def registry_path(self) -> Path:
+        """返回注册表 JSON 文件的路径。"""
         return self._registry_path
 
     @property
     def journal_path(self) -> Path:
+        """返回仓库日志 JSONL 文件的路径。"""
         return self._journal_path
 
     @property
     def context_path(self) -> Path:
+        """返回活跃上下文 Markdown 文件的路径。"""
         return self._context_path
 
     @property
     def runs_dir(self) -> Path:
+        """返回运行报告和验证报告的输出目录路径。"""
         return self._runs_dir
 
     def list_cards(self, *, status: RepoTaskStatus | None = None) -> list[RepoTaskCard]:
+        """列出任务卡片，可按状态过滤，结果按评分降序、更新时间降序、标题升序排列。"""
         cards = self._load_registry().cards
         if status is not None:
             cards = [card for card in cards if card.status == status]
         return sorted(cards, key=lambda card: (-card.score, -card.updated_at, card.title.lower()))
 
     def get_card(self, card_id: str) -> RepoTaskCard | None:
+        """根据卡片 ID 查找并返回单个任务卡片，不存在则返回 None。"""
         for card in self._load_registry().cards:
             if card.id == card_id:
                 return card
@@ -204,6 +254,12 @@ class RepoAutopilotStore:
         labels: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> tuple[RepoTaskCard, bool]:
+        """将任务卡片入队到注册表，支持去重和更新。
+
+        通过指纹（fingerprint）判断是否已存在相同卡片：若存在则更新标题、正文、
+        标签和元数据并重新评分，返回 (card, False)；若不存在则创建新卡片、
+        计算评分、追加到注册表并记录日志，返回 (card, True)。入队后自动重建活跃上下文。
+        """
         registry = self._load_registry()
         now = time.time()
         normalized_title = title.strip()
@@ -264,6 +320,7 @@ class RepoAutopilotStore:
         return card, True
 
     def pick_next_card(self) -> RepoTaskCard | None:
+        """从状态为 queued 的卡片中选择下一个要执行的任务，按评分和时间排序。"""
         queued = [card for card in self._load_registry().cards if card.status == "queued"]
         if not queued:
             return None
@@ -277,6 +334,11 @@ class RepoAutopilotStore:
         note: str | None = None,
         metadata_updates: dict[str, Any] | None = None,
     ) -> RepoTaskCard:
+        """更新指定卡片的状态，可选附加备注和元数据更新。
+
+        更新后自动重新评分、持久化注册表、记录日志并重建活跃上下文。
+        若卡片不存在则抛出 ValueError。
+        """
         registry = self._load_registry()
         card = next((item for item in registry.cards if item.id == card_id), None)
         if card is None:
@@ -297,6 +359,10 @@ class RepoAutopilotStore:
         return card
 
     def load_journal(self, *, limit: int = 12) -> list[RepoJournalEntry]:
+        """从日志文件中加载最近的日志条目，默认返回最近 12 条。
+
+        逐行读取 JSONL 格式的日志文件，跳过解析失败的行。
+        """
         if not self._journal_path.exists():
             return []
         entries: list[RepoJournalEntry] = []
@@ -318,6 +384,7 @@ class RepoAutopilotStore:
         task_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> RepoJournalEntry:
+        """向日志文件追加一条新的事件记录，以 JSONL 格式写入，返回创建的日志条目。"""
         entry = RepoJournalEntry(
             timestamp=time.time(),
             kind=kind,
@@ -330,11 +397,14 @@ class RepoAutopilotStore:
         return entry
 
     def load_active_context(self) -> str:
+        """加载并返回活跃上下文 Markdown 文件的内容，文件不存在则返回空字符串。"""
         if not self._context_path.exists():
             return ""
         return self._context_path.read_text(encoding="utf-8", errors="replace").strip()
 
     def rebuild_active_context(self) -> str:
+        """重建活跃上下文 Markdown 文件，汇总当前任务焦点、进行中任务、待处理队列、
+        最近完成/失败记录、日志摘要和策略路径，同时导出仪表盘数据。"""
         cards = self._load_registry().cards
         running = [card for card in cards if card.status in {"preparing", "running", "verifying", "waiting_ci", "repairing"}]
         accepted = [card for card in cards if card.status in {"accepted", "pr_open"}]
@@ -416,12 +486,14 @@ class RepoAutopilotStore:
         return content
 
     def stats(self) -> dict[str, int]:
+        """返回各状态下的任务卡片数量统计字典。"""
         counts: dict[str, int] = {}
         for card in self._load_registry().cards:
             counts[card.status] = counts.get(card.status, 0) + 1
         return counts
 
     def load_policies(self) -> dict[str, Any]:
+        """加载并返回三项策略配置（autopilot、verification、release），缺失时使用默认值。"""
         return {
             "autopilot": self._read_yaml(get_project_autopilot_policy_path(self._cwd), _DEFAULT_AUTOPILOT_POLICY),
             "verification": self._read_yaml(
@@ -432,6 +504,11 @@ class RepoAutopilotStore:
         }
 
     def scan_github_issues(self, *, limit: int = 10) -> list[RepoTaskCard]:
+        """扫描仓库的开放 GitHub Issue，将其作为任务卡片入队。
+
+        使用 `gh issue list` 命令获取开放 Issue，解析标题、正文、标签等信息，
+        通过 enqueue_card 入队（自动去重），返回入队的卡片列表。
+        """
         raw = self._run_gh_json(
             [
                 "gh",
@@ -466,6 +543,11 @@ class RepoAutopilotStore:
         return cards
 
     def scan_github_prs(self, *, limit: int = 10) -> list[RepoTaskCard]:
+        """扫描仓库的开放 GitHub PR，将其作为任务卡片入队。
+
+        使用 `gh pr list` 命令获取开放 PR，解析标题、正文、草稿状态、
+        审查决策、合并状态、分支名等信息，通过 enqueue_card 入队。
+        """
         raw = self._run_gh_json(
             [
                 "gh",
@@ -510,6 +592,11 @@ class RepoAutopilotStore:
         limit: int = 10,
         root: str | Path | None = None,
     ) -> list[RepoTaskCard]:
+        """扫描本地 claude-code 目录下的命令和代理候选项，将其作为评估任务入队。
+
+        在指定根目录下的 commands/ 和 agents/ 子目录中查找候选项，
+        为每个候选项创建评估类任务卡片，用于决定是否对齐或采纳到 OpenHarness。
+        """
         candidate_root = Path(root or Path.home() / "claude-code").expanduser().resolve()
         if not candidate_root.exists():
             raise ValueError(f"claude-code root not found: {candidate_root}")
@@ -539,6 +626,11 @@ class RepoAutopilotStore:
         return cards
 
     def scan_all_sources(self, *, issue_limit: int = 10, pr_limit: int = 10) -> dict[str, int]:
+        """扫描所有任务来源（GitHub Issue、PR、claude-code 候选），返回各来源的入队数量。
+
+        每个来源的扫描失败会被记录为警告日志但不影响其他来源。
+        扫描完成后自动重建活跃上下文。
+        """
         counts = {"github_issue": 0, "github_pr": 0, "claude_code_candidate": 0}
         try:
             counts["github_issue"] = len(self.scan_github_issues(limit=issue_limit))
@@ -563,6 +655,7 @@ class RepoAutopilotStore:
         max_turns: int | None = None,
         permission_mode: str | None = None,
     ) -> RepoRunResult:
+        """选取下一个排队的任务卡片并执行，无排队任务时抛出 ValueError。"""
         card = self.pick_next_card()
         if card is None:
             raise ValueError("No queued autopilot cards.")
@@ -581,6 +674,13 @@ class RepoAutopilotStore:
         max_turns: int | None = None,
         permission_mode: str | None = None,
     ) -> RepoRunResult:
+        """执行指定卡片的完整自动驾驶流程。
+
+        流程包括：创建隔离 worktree → 调用 agent loop → 本地验证门控 →
+        git 提交推送 → 创建/更新 PR → 等待远端 CI → 判定自动合并或人工门控。
+        支持多轮修复重试（repair loop），每次重试会在 prompt 中附加前一轮失败上下文。
+        若卡片已是活跃状态则抛出 ValueError。
+        """
         card = self.get_card(card_id)
         if card is None:
             raise ValueError(f"No autopilot card found with ID: {card_id}")
@@ -1090,6 +1190,11 @@ class RepoAutopilotStore:
         issue_limit: int = 10,
         pr_limit: int = 10,
     ) -> RepoRunResult | None:
+        """执行一次完整的自动驾驶心跳周期。
+
+        先扫描所有来源，若当前有活跃任务则跳过执行，若无排队任务则记录空闲日志，
+        否则自动选取下一个排队任务并执行。返回执行结果或 None。
+        """
         self.scan_all_sources(issue_limit=issue_limit, pr_limit=pr_limit)
         if any(card.status in {"preparing", "running", "verifying", "waiting_ci", "repairing"} for card in self.list_cards()):
             self.append_journal(kind="tick_skip", summary="Skipped run-next because another card is active")
@@ -1104,6 +1209,10 @@ class RepoAutopilotStore:
         )
 
     def install_default_cron(self) -> list[str]:
+        """安装默认的定时任务，包括每30分钟扫描来源和每2小时执行一次 tick。
+
+        返回已安装的定时任务名称列表。
+        """
         from openharness.services.cron import upsert_cron_job
 
         jobs = [
@@ -1125,6 +1234,11 @@ class RepoAutopilotStore:
         return [job["name"] for job in jobs]
 
     def export_dashboard(self, output_dir: str | Path | None = None) -> Path:
+        """导出仪表盘静态数据（snapshot.json）和回退 HTML 页面到指定目录。
+
+        默认输出到项目目录下的 docs/autopilot/，自动创建目录和 .nojekyll 文件。
+        返回输出目录路径。
+        """
         target_dir = Path(output_dir) if output_dir is not None else self._cwd / "docs" / "autopilot"
         target_dir = target_dir.resolve()
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -1138,6 +1252,7 @@ class RepoAutopilotStore:
         return target_dir
 
     def _max_attempts(self, policies: dict[str, Any]) -> int:
+        """根据策略配置计算最大尝试次数，取执行策略和修复策略中的较大值。"""
         execution = dict(policies.get("autopilot", {}).get("execution", {}))
         repair = dict(policies.get("autopilot", {}).get("repair", {}))
         execution_attempts = int(execution.get("max_attempts", 3) or 3)
@@ -1145,15 +1260,18 @@ class RepoAutopilotStore:
         return max(execution_attempts, repair_rounds + 1, 1)
 
     def _base_branch(self, policies: dict[str, Any]) -> str:
+        """从策略配置中获取基础分支名，默认为 'main'。"""
         execution = dict(policies.get("autopilot", {}).get("execution", {}))
         return _safe_text(execution.get("base_branch")) or "main"
 
     def _head_branch(self, card: RepoTaskCard, policies: dict[str, Any]) -> str:
+        """根据策略配置的分支前缀和卡片 ID 生成 head 分支名，默认前缀为 'autopilot/'。"""
         github_policy = dict(policies.get("autopilot", {}).get("github", {}))
         prefix = _safe_text(github_policy.get("pr_branch_prefix")) or "autopilot/"
         return f"{prefix}{card.id}"
 
     def _worktree_slug(self, card: RepoTaskCard) -> str:
+        """根据卡片 ID 生成 worktree 的 slug 标识，格式为 'autopilot/{card.id}'。"""
         return f"autopilot/{card.id}"
 
     def _run_command(
@@ -1165,6 +1283,11 @@ class RepoAutopilotStore:
         shell: bool = False,
         check: bool = False,
     ) -> subprocess.CompletedProcess[str]:
+        """执行子进程命令的通用封装，禁用 git 交互式提示。
+
+        设置 GIT_TERMINAL_PROMPT=0 和 GIT_ASKPASS='' 环境变量，
+        若 check=True 且返回码非零则抛出 RuntimeError。
+        """
         completed = subprocess.run(
             command,
             cwd=cwd or self._cwd,
@@ -1181,12 +1304,15 @@ class RepoAutopilotStore:
         return completed
 
     def _run_git(self, args: list[str], *, cwd: Path | None = None, check: bool = False) -> subprocess.CompletedProcess[str]:
+        """执行 git 子命令的便捷封装。"""
         return self._run_command(["git", *args], cwd=cwd, check=check)
 
     def _run_gh(self, args: list[str], *, cwd: Path | None = None, check: bool = False) -> subprocess.CompletedProcess[str]:
+        """执行 gh（GitHub CLI）子命令的便捷封装。"""
         return self._run_command(["gh", *args], cwd=cwd, check=check)
 
     def _gh_json(self, args: list[str], *, cwd: Path | None = None) -> Any:
+        """执行 gh 命令并解析 JSON 输出，空输出返回 None。"""
         completed = self._run_gh(args, cwd=cwd, check=True)
         raw = (completed.stdout or "").strip()
         if not raw:
@@ -1194,14 +1320,17 @@ class RepoAutopilotStore:
         return json.loads(raw)
 
     def _git_has_changes(self, cwd: Path) -> bool:
+        """检查 git 工作目录是否有未提交的变更（通过 git status --porcelain 判断）。"""
         completed = self._run_git(["status", "--porcelain"], cwd=cwd, check=True)
         return bool((completed.stdout or "").strip())
 
     def _is_git_repo(self, cwd: Path) -> bool:
+        """检查指定路径是否是一个有效的 git 仓库。"""
         completed = self._run_git(["rev-parse", "--git-dir"], cwd=cwd)
         return completed.returncode == 0
 
     def _git_commit_all(self, cwd: Path, message: str) -> bool:
+        """将所有变更添加到暂存区并提交，无变更时返回 False。"""
         if not self._git_has_changes(cwd):
             return False
         self._run_git(["add", "-A"], cwd=cwd, check=True)
@@ -1209,9 +1338,11 @@ class RepoAutopilotStore:
         return True
 
     def _git_push_branch(self, cwd: Path, branch: str) -> None:
+        """将指定分支推送到远端 origin 并设置上游跟踪。"""
         self._run_git(["push", "-u", "origin", branch], cwd=cwd, check=True)
 
     def _git_branch_has_progress(self, cwd: Path, *, base_branch: str) -> bool:
+        """检查当前分支相对于基础分支是否有新提交（通过 git rev-list --count 判断）。"""
         completed = self._run_git(
             ["rev-list", "--count", f"origin/{base_branch}..HEAD"],
             cwd=cwd,
@@ -1224,6 +1355,11 @@ class RepoAutopilotStore:
             return False
 
     def _sync_worktree_to_base(self, cwd: Path, *, base_branch: str, head_branch: str, reset: bool) -> None:
+        """将 worktree 同步到基础分支的最新状态。
+
+        先 fetch origin 的 base_branch，若 reset=True 则强制重新创建 head_branch
+        基于 origin/base_branch，否则仅 checkout 到 head_branch。
+        """
         self._run_git(["fetch", "origin", base_branch], cwd=cwd, check=True)
         if reset:
             self._run_git(["checkout", "-B", head_branch, f"origin/{base_branch}"], cwd=cwd, check=True)
@@ -1231,6 +1367,7 @@ class RepoAutopilotStore:
         self._run_git(["checkout", head_branch], cwd=cwd, check=True)
 
     def _issue_number_for_card(self, card: RepoTaskCard) -> int | None:
+        """从卡片的元数据 linked_issue_numbers 或 source_ref 中解析关联的 Issue 编号。"""
         linked = card.metadata.get("linked_issue_numbers")
         if isinstance(linked, list) and linked:
             try:
@@ -1240,6 +1377,7 @@ class RepoAutopilotStore:
         return _source_ref_number(card.source_ref, "issue")
 
     def _linked_pr_number(self, card: RepoTaskCard) -> int | None:
+        """从卡片的元数据 linked_pr_number 或 source_ref 中解析关联的 PR 编号。"""
         linked = card.metadata.get("linked_pr_number")
         if linked is not None:
             try:
@@ -1249,6 +1387,7 @@ class RepoAutopilotStore:
         return _source_ref_number(card.source_ref, "pr")
 
     def _current_repo_full_name(self) -> str:
+        """通过 `gh repo view` 获取当前仓库的完整名称（owner/repo），失败则抛出 RuntimeError。"""
         info = self._gh_json(["repo", "view", "--json", "nameWithOwner"], cwd=self._cwd) or {}
         repo = _safe_text(info.get("nameWithOwner"))
         if not repo:
@@ -1256,6 +1395,7 @@ class RepoAutopilotStore:
         return repo
 
     def _find_open_pr_for_branch(self, head_branch: str) -> dict[str, Any] | None:
+        """查找指定 head 分支上的开放 PR，返回 PR 信息字典或 None。"""
         data = self._gh_json(
             [
                 "pr",
@@ -1274,6 +1414,7 @@ class RepoAutopilotStore:
         return None
 
     def _best_effort_add_labels(self, pr_number: int, labels: list[str]) -> None:
+        """尽最大努力为 PR 添加标签，失败时仅记录警告日志不抛出异常。"""
         normalized = [label for label in labels if label]
         if not normalized:
             return
@@ -1293,6 +1434,7 @@ class RepoAutopilotStore:
         run_report_path: Path,
         verification_report_path: Path,
     ) -> str:
+        """构建 PR 描述正文，包含任务摘要、报告路径和注意事项，若有关联 Issue 则添加 Closes 关键字。"""
         issue_number = self._issue_number_for_card(card)
         body = [
             "## Autopilot Summary",
@@ -1324,6 +1466,8 @@ class RepoAutopilotStore:
         run_report_path: Path,
         verification_report_path: Path,
     ) -> dict[str, Any]:
+        """创建或复用 PR。若该分支已有开放 PR 则添加 autopilot 标签后返回；
+        否则使用临时文件存储 PR 正文并通过 `gh pr create` 创建新 PR。"""
         existing = self._find_open_pr_for_branch(head_branch)
         if existing is not None:
             self._best_effort_add_labels(existing.get("number"), ["autopilot"])
@@ -1365,6 +1509,7 @@ class RepoAutopilotStore:
         return created
 
     def _comment_on_issue(self, issue_number: int, comment: str) -> None:
+        """在指定 Issue 上发表评论，失败时仅记录警告日志不抛出异常。"""
         try:
             self._run_gh(["issue", "comment", str(issue_number), "--body", comment], cwd=self._cwd, check=True)
         except Exception as exc:
@@ -1375,6 +1520,7 @@ class RepoAutopilotStore:
             )
 
     def _comment_on_pr(self, pr_number: int, comment: str) -> None:
+        """在指定 PR 上发表评论，失败时仅记录警告日志不抛出异常。"""
         try:
             self._run_gh(["pr", "comment", str(pr_number), "--body", comment], cwd=self._cwd, check=True)
         except Exception as exc:
@@ -1385,48 +1531,56 @@ class RepoAutopilotStore:
             )
 
     def _comment_started(self, card: RepoTaskCard, attempt_count: int) -> str:
+        """生成任务开始处理时的双语评论文本。"""
         return _bilingual_lines(
             f"OpenHarness autopilot 已开始处理 `{card.id}`，当前第 {attempt_count} 轮执行。",
             f"OpenHarness autopilot started processing `{card.id}`. Attempt {attempt_count} is now running.",
         )
 
     def _comment_pr_opened(self, pr_number: int, pr_url: str) -> str:
+        """生成 PR 创建/更新时的双语评论文本。"""
         return _bilingual_lines(
             f"已创建或更新 PR #{pr_number}: {pr_url}",
             f"Created or updated PR #{pr_number}: {pr_url}",
         )
 
     def _comment_ci_failed(self, attempt_count: int, summary: str) -> str:
+        """生成远端 CI 失败时的双语评论文本，提示即将进入修复轮次。"""
         return _bilingual_lines(
             f"远端 CI 失败，准备进入第 {attempt_count + 1} 轮自动修复。摘要：{summary}",
             f"Remote CI failed. Preparing repair round {attempt_count + 1}. Summary: {summary}",
         )
 
     def _comment_local_failed(self, attempt_count: int, summary: str) -> str:
+        """生成本地验证失败时的双语评论文本，提示即将进入修复轮次。"""
         return _bilingual_lines(
             f"本地 verification 失败，准备进入第 {attempt_count + 1} 轮自动修复。摘要：{summary}",
             f"Local verification failed. Preparing repair round {attempt_count + 1}. Summary: {summary}",
         )
 
     def _comment_merged(self, pr_number: int) -> str:
+        """生成 PR 自动合并完成时的双语评论文本。"""
         return _bilingual_lines(
             f"PR #{pr_number} 已自动合并，任务闭环完成。",
             f"PR #{pr_number} was auto-merged. The autopilot loop has completed.",
         )
 
     def _comment_human_gate(self, pr_number: int) -> str:
+        """生成等待人工门控审批时的双语评论文本。"""
         return _bilingual_lines(
             f"PR #{pr_number} 的本地验证和远端 CI 都已通过，但仍需人工 gate 或 merge label。",
             f"PR #{pr_number} passed local verification and remote CI, but still requires a human gate or merge label.",
         )
 
     def _comment_terminal_failure(self, summary: str) -> str:
+        """生成自动化流程终止失败时的双语评论文本。"""
         return _bilingual_lines(
             f"自动化流程已停止。失败原因：{summary}",
             f"The automated loop has stopped. Failure reason: {summary}",
         )
 
     def _pr_status_snapshot(self, pr_number: int) -> dict[str, Any]:
+        """获取 PR 的完整状态快照，包括编号、URL、草稿状态、标签、分支、合并状态、审查决策和 CI 检查汇总。"""
         payload = self._gh_json(
             [
                 "pr",
@@ -1445,6 +1599,10 @@ class RepoAutopilotStore:
         return payload
 
     def _ci_rollup(self, pr_snapshot: dict[str, Any]) -> tuple[str, str, list[dict[str, Any]]]:
+        """从 PR 快照的 statusCheckRollup 中解析 CI 检查结果。
+
+        返回三元组：(状态字符串 'pending'/'failed'/'success'、摘要文本、标准化检查列表)。
+        """
         checks = pr_snapshot.get("statusCheckRollup") or []
         normalized: list[dict[str, Any]] = []
         if not isinstance(checks, list):
@@ -1478,6 +1636,12 @@ class RepoAutopilotStore:
         return "success", "All reported remote checks passed.", normalized
 
     async def _wait_for_pr_ci(self, pr_number: int, policies: dict[str, Any]) -> tuple[str, str, dict[str, Any], list[dict[str, Any]]]:
+        """异步轮询等待 PR 的远端 CI 结果。
+
+        根据 GitHub 策略配置的超时时间、轮询间隔、无检查宽限期和检查稳定期，
+        反复查询 PR 状态直到 CI 完成或超时。返回四元组：
+        (CI 状态、摘要、PR 快照、标准化检查列表)。
+        """
         github_policy = dict(policies.get("autopilot", {}).get("github", {}))
         timeout_seconds = int(github_policy.get("ci_timeout_seconds", 1800) or 1800)
         poll_interval = int(github_policy.get("ci_poll_interval_seconds", 20) or 20)
@@ -1504,6 +1668,14 @@ class RepoAutopilotStore:
             await asyncio.sleep(max(poll_interval, 5))
 
     def _automerge_eligible(self, pr_snapshot: dict[str, Any], policies: dict[str, Any]) -> bool:
+        """判断 PR 是否符合自动合并条件。
+
+        根据策略中的 auto_merge.mode 配置：
+        - fully_auto: 直接合并
+        - label_gated: 需要 PR 带有指定标签（默认 autopilot:merge）
+        - pr_only: 不自动合并
+        草稿 PR 始终不合合并。
+        """
         github_policy = dict(policies.get("autopilot", {}).get("github", {}))
         auto_merge = dict(github_policy.get("auto_merge", {}))
         mode = _safe_text(auto_merge.get("mode")) or "label_gated"
@@ -1518,6 +1690,7 @@ class RepoAutopilotStore:
         return required_label.lower() in labels
 
     def _merge_pull_request(self, pr_number: int) -> None:
+        """通过 `gh pr merge --squash` 合并指定 PR。"""
         self._run_gh(
             ["pr", "merge", str(pr_number), "--squash"],
             cwd=self._cwd,
@@ -1534,6 +1707,11 @@ class RepoAutopilotStore:
         failure_stage: str | None,
         failure_summary: str | None,
     ) -> str:
+        """构建修复轮次的 agent prompt。
+
+        第一轮使用基本执行 prompt，后续轮次在基本 prompt 上追加修复上下文信息
+        （前一轮的失败阶段、失败摘要、agent 摘要）和修复指令（最小补丁、不重新开始、重跑验证）。
+        """
         prompt = self._build_execution_prompt(card, policies)
         if attempt_count <= 1 or not failure_stage:
             return prompt
@@ -1563,6 +1741,11 @@ class RepoAutopilotStore:
         pr_number: int,
         policies: dict[str, Any],
     ) -> RepoRunResult:
+        """处理已存在 PR 的任务卡片（非 autopilot 管理的 PR）。
+
+        不执行新的 agent 运行，而是直接监控现有 PR 的 CI 状态，
+        根据结果决定自动合并或标记为人工门控等待。
+        """
         current_run_report = self._runs_dir / f"{card.id}-run.md"
         current_verification_report = self._runs_dir / f"{card.id}-verification.md"
         self.update_status(
@@ -1632,6 +1815,7 @@ class RepoAutopilotStore:
         )
 
     def _build_dashboard_snapshot(self) -> dict[str, Any]:
+        """构建仪表盘快照数据，包含按状态分列的卡片、计数、焦点任务、日志和策略路径。"""
         registry = self._load_registry()
         cards = sorted(
             registry.cards,
@@ -1698,6 +1882,7 @@ class RepoAutopilotStore:
         }
 
     def _serialize_card(self, card: RepoTaskCard) -> dict[str, Any]:
+        """将任务卡片序列化为仪表盘友好的字典，提取关键元数据字段并处理验证步骤。"""
         verification_steps = []
         for step in card.metadata.get("verification_steps", []) or []:
             if isinstance(step, dict):
@@ -1740,6 +1925,7 @@ class RepoAutopilotStore:
         }
 
     def _status_sort_key(self, status: str) -> int:
+        """返回状态在仪表盘排序中的优先级数值，优先级越低（如 repairing=0）排序越靠前。"""
         order = {
             "repairing": 0,
             "waiting_ci": 1,
@@ -1758,13 +1944,11 @@ class RepoAutopilotStore:
         return order.get(status, 99)
 
     def _render_dashboard_html(self, snapshot: dict[str, Any]) -> str:
-        """Return a minimal fallback HTML page.
+        """生成最小化的回退 HTML 仪表盘页面。
 
-        The primary dashboard is now a React + Vite app built from
-        ``autopilot-dashboard/``.  This fallback is only written when
-        no pre-built ``index.html`` already exists in the output
-        directory, so local ``snapshot.json`` generation still works
-        without a Node.js toolchain.
+        主仪表盘已迁移为 React + Vite 应用（autopilot-dashboard/），
+        此回退页面仅在输出目录中无预构建的 index.html 时写入，
+        确保 snapshot.json 的本地生成在没有 Node.js 工具链时仍可使用。
         """
         repo_name = escape(_safe_text(snapshot.get("repo_name")) or "OpenHarness")
         generated = time.strftime(
@@ -1818,6 +2002,7 @@ class RepoAutopilotStore:
 """
 
     def _ensure_layout(self) -> None:
+        """确保项目目录结构和默认策略文件存在，缺失时自动创建。"""
         for path, payload in (
             (get_project_autopilot_policy_path(self._cwd), _DEFAULT_AUTOPILOT_POLICY),
             (get_project_verification_policy_path(self._cwd), _DEFAULT_VERIFICATION_POLICY),
@@ -1831,6 +2016,7 @@ class RepoAutopilotStore:
             self.rebuild_active_context()
 
     def _load_registry(self) -> RepoAutopilotRegistry:
+        """从磁盘加载注册表，文件不存在或解析失败时返回空注册表。"""
         if not self._registry_path.exists():
             return RepoAutopilotRegistry(updated_at=time.time(), cards=[])
         try:
@@ -1840,6 +2026,7 @@ class RepoAutopilotStore:
         return RepoAutopilotRegistry.model_validate(payload)
 
     def _save_registry(self, registry: RepoAutopilotRegistry) -> None:
+        """将注册表以 JSON 格式原子写入磁盘，同时更新 updated_at 时间戳。"""
         registry.updated_at = time.time()
         atomic_write_text(
             self._registry_path,
@@ -1860,11 +2047,21 @@ class RepoAutopilotStore:
         title: str,
         body: str,
     ) -> str:
+        """基于 source_ref 或 title+body 的 SHA1 哈希生成卡片指纹，格式为 'source_kind:hexdigest'。
+
+        优先使用 source_ref 作为指纹基础，若无则使用标题和正文的组合文本。
+        指纹用于卡片去重判断。
+        """
         basis = source_ref.strip() or f"{title.strip()}\n{body.strip()}"
         digest = sha1(basis.encode("utf-8")).hexdigest()[:16]
         return f"{source_kind}:{digest}"
 
     def _score_card(self, card: RepoTaskCard) -> tuple[int, list[str]]:
+        """为任务卡片计算优先级评分和评分理由。
+
+        评分规则：基于来源基础分 + bug/紧急信号加分 + 时效性加分 - 草稿 PR 减分。
+        返回 (总分, 评分理由列表)。
+        """
         score = _SOURCE_BASE_SCORES.get(card.source_kind, 50)
         reasons = [f"source={card.source_kind}"]
         text = f"{card.title}\n{card.body}".lower()
@@ -1902,14 +2099,20 @@ class RepoAutopilotStore:
         return score, reasons
 
     def _normalize_labels(self, labels: list[str] | None) -> list[str]:
+        """规范化标签列表：去除空白和空值，去重并排序。"""
         if not labels:
             return []
         return sorted({label.strip() for label in labels if label and label.strip()})
 
     def _merge_labels(self, existing: list[str], incoming: list[str]) -> list[str]:
+        """合并已有标签和新增标签，去重并排序。"""
         return sorted({*existing, *incoming})
 
     def _run_gh_json(self, command: list[str]) -> list[dict[str, Any]]:
+        """执行 gh CLI 命令并解析 JSON 数组输出，gh 未安装时抛出 ValueError。
+
+        返回解析后的字典列表，空输出返回空列表。
+        """
         try:
             completed = subprocess.run(
                 command,
@@ -1932,6 +2135,7 @@ class RepoAutopilotStore:
         return [item for item in payload if isinstance(item, dict)]
 
     def _read_yaml(self, path: Path, default: dict[str, Any]) -> dict[str, Any]:
+        """从 YAML 文件加载配置，文件不存在或解析失败时返回默认值。"""
         if not path.exists():
             return dict(default)
         try:
@@ -1943,6 +2147,11 @@ class RepoAutopilotStore:
         return payload
 
     def _build_execution_prompt(self, card: RepoTaskCard, policies: dict[str, Any]) -> str:
+        """构建 agent 执行 prompt，包含任务信息、三项策略配置和预期输出说明。
+
+        指导 agent 以最小化实现完成任务、自行运行验证、不做不可逆操作，
+        并在结束时总结变更内容、验证结果和遗留风险。
+        """
         autopilot_policy = yaml.safe_dump(policies["autopilot"], sort_keys=False).strip()
         verification_policy = yaml.safe_dump(policies["verification"], sort_keys=False).strip()
         release_policy = yaml.safe_dump(policies["release"], sort_keys=False).strip()
@@ -1979,6 +2188,12 @@ class RepoAutopilotStore:
         permission_mode: str,
         cwd: Path | None = None,
     ) -> str:
+        """通过 UI runtime 执行 agent prompt 并收集文本回复。
+
+        构建一个无交互的 runtime（自动允许所有工具权限，不提问用户），
+        启动引擎后流式收集 AssistantTextDelta 和 AssistantTurnComplete 事件，
+        遇到 ErrorEvent 则抛出 RuntimeError。返回拼接后的助手文本。
+        """
         from openharness.ui.runtime import build_runtime, close_runtime, start_runtime
 
         async def _allow(_tool_name: str, _reason: str) -> bool:
@@ -2012,11 +2227,17 @@ class RepoAutopilotStore:
         return "".join(collected).strip()
 
     def _verification_commands(self, policies: dict[str, Any]) -> list[str]:
+        """从验证策略中提取可用验证命令，过滤掉当前项目不支持的命令。"""
         configured = policies.get("verification", {}).get("commands", [])
         commands = [str(item).strip() for item in configured if str(item).strip()]
         return [command for command in commands if _looks_available(command, self._cwd)]
 
     def _run_verification_steps(self, policies: dict[str, Any], *, cwd: Path | None = None) -> list[RepoVerificationStep]:
+        """依次执行验证命令，收集每个命令的执行结果。
+
+        每条命令以 shell 模式执行，超时 1800 秒。成功/失败/超时/异常分别对应
+        success/failed/error 状态，stdout/stderr 保留最后 4000 字符。
+        """
         steps: list[RepoVerificationStep] = []
         for command in self._verification_commands(policies):
             try:
@@ -2064,6 +2285,7 @@ class RepoAutopilotStore:
         card: RepoTaskCard,
         steps: list[RepoVerificationStep],
     ) -> str:
+        """渲染验证报告的 Markdown 文本，包含每个验证步骤的状态、返回码和输出。"""
         lines = [
             f"# Verification Report: {card.id}",
             "",
@@ -2096,6 +2318,10 @@ class RepoAutopilotStore:
         verification_steps: list[RepoVerificationStep],
         verification_status: str,
     ) -> str:
+        """渲染运行报告的 Markdown 文本，包含 agent 自述摘要和服务级验证结果。
+
+        agent 摘要被视为不可信信息，下方附加服务级验证的真实结果。
+        """
         lines = [
             f"# Autopilot Run Report: {card.id}",
             "",

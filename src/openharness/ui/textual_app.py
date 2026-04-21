@@ -1,4 +1,15 @@
-"""Default Textual terminal UI for OpenHarness."""
+"""OpenHarness 的默认 Textual 终端 UI。
+
+本模块实现基于 Textual 框架的终端 UI 应用，作为 React TUI 的备选方案，
+提供完整的交互功能：对话记录显示、用户输入、权限确认模态框、问题回答框、
+侧边栏状态面板（模型/权限/任务/MCP）以及键盘快捷键绑定。
+
+主要组件：
+- AppConfig：终端应用会话配置
+- PermissionScreen：工具权限确认模态弹窗
+- QuestionScreen：问题回答模态弹窗
+- OpenHarnessTerminalApp：主应用（Textual App）
+"""
 
 from __future__ import annotations
 
@@ -32,7 +43,10 @@ from openharness.ui.runtime import build_runtime, close_runtime, handle_line, st
 
 @dataclass(frozen=True)
 class AppConfig:
-    """Configuration for a terminal app session."""
+    """终端应用会话配置。
+
+    包含初始提示、模型、API 基础 URL、系统提示词、API 密钥和外部客户端。
+    """
 
     prompt: str | None = None
     model: str | None = None
@@ -43,7 +57,11 @@ class AppConfig:
 
 
 class PermissionScreen(ModalScreen[bool]):
-    """Simple approval modal for mutating tools."""
+    """工具权限确认模态弹窗。
+
+    显示工具名称和拒绝原因，提供 Allow/Deny 按钮，
+    支持键盘快捷键 y/n/Escape。
+    """
 
     BINDINGS = [
         Binding("escape", "deny", "Deny"),
@@ -84,7 +102,11 @@ class PermissionScreen(ModalScreen[bool]):
 
 
 class QuestionScreen(ModalScreen[str]):
-    """Prompt the user for a short answer during tool execution."""
+    """工具执行期间的用户问题回答模态弹窗。
+
+    显示问题文本和输入框，提供 Submit/Cancel 按钮，
+    支持 Enter/Escape 快捷键。
+    """
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
@@ -134,7 +156,14 @@ class QuestionScreen(ModalScreen[str]):
 
 
 class OpenHarnessTerminalApp(App[None]):
-    """Terminal-first Textual UI."""
+    """基于 Textual 的终端优先 UI 应用。
+
+    布局：左侧对话记录区 + 右侧状态面板（状态栏/任务/MCP），
+    底部输入栏，顶部标题栏和底部快捷键栏。
+
+    支持的快捷键：Ctrl+L（清空对话）、Ctrl+R（刷新侧边栏）、
+    Ctrl+K（切换 Vim 模式）、Ctrl+V（切换语音模式）、Ctrl+D（退出）。
+    """
 
     CSS = """
     Screen {

@@ -1,4 +1,9 @@
-"""Tool for triggering local named jobs on demand."""
+"""本地定时任务手动触发工具。
+
+本模块提供 RemoteTriggerTool，用于按需立即执行已注册的 cron 定时任务。
+根据 cron 任务配置的命令和工作目录创建子进程执行，
+支持超时控制（默认 120 秒）。
+"""
 
 from __future__ import annotations
 
@@ -14,14 +19,22 @@ from openharness.utils.shell import create_shell_subprocess
 
 
 class RemoteTriggerToolInput(BaseModel):
-    """Arguments for triggering a local named job."""
+    """定时任务手动触发工具的输入参数。
+
+    Attributes:
+        name: Cron 任务名称
+        timeout_seconds: 超时时间（秒），范围 1-600，默认 120
+    """
 
     name: str = Field(description="Cron job name")
     timeout_seconds: int = Field(default=120, ge=1, le=600)
 
 
 class RemoteTriggerTool(BaseTool):
-    """Run a registered cron job immediately."""
+    """按需立即执行已注册 cron 定时任务的工具。
+
+    根据任务配置创建子进程执行命令。
+    """
 
     name = "remote_trigger"
     description = "Trigger a configured local cron-style job immediately."
@@ -32,6 +45,17 @@ class RemoteTriggerTool(BaseTool):
         arguments: RemoteTriggerToolInput,
         context: ToolExecutionContext,
     ) -> ToolResult:
+        """执行 cron 任务手动触发。
+
+        查找任务配置，创建子进程执行命令，收集输出并返回。
+
+        Args:
+            arguments: 包含任务名称和超时设置的输入参数
+            context: 工具执行上下文
+
+        Returns:
+            触发结果和任务输出
+        """
         job = get_cron_job(arguments.name)
         if job is None:
             return ToolResult(output=f"Cron job not found: {arguments.name}", is_error=True)

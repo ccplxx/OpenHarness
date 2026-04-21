@@ -1,4 +1,9 @@
-"""Docker-based sandbox backend for isolated tool execution."""
+"""基于 Docker 的沙箱后端模块。
+
+本模块实现了一个长期运行的 Docker 容器作为沙箱隔离环境，支持容器的创建、
+启停、命令执行等生命周期管理。通过绑定挂载项目目录、禁用网络和设置资源限制
+来确保工具执行的安全隔离。
+"""
 
 from __future__ import annotations
 
@@ -17,7 +22,17 @@ logger = logging.getLogger(__name__)
 
 
 def get_docker_availability(settings: Settings) -> SandboxAvailability:
-    """Check whether Docker can be used as a sandbox backend."""
+    """检测 Docker 是否可作为沙箱后端使用。
+
+    依次检查：配置是否启用 Docker 后端 → 平台是否支持 Docker 沙箱 →
+    Docker CLI 是否存在 → Docker 守护进程是否运行。
+
+    Args:
+        settings: OpenHarness 配置对象。
+
+    Returns:
+        SandboxAvailability: Docker 沙箱的可用性信息。
+    """
     if not settings.sandbox.enabled or settings.sandbox.backend != "docker":
         return SandboxAvailability(
             enabled=False, available=False, reason="Docker sandbox is not enabled"
@@ -60,7 +75,17 @@ def get_docker_availability(settings: Settings) -> SandboxAvailability:
 
 @dataclass
 class DockerSandboxSession:
-    """Manages a long-running Docker container for one OpenHarness session."""
+    """管理一个 OpenHarness 会话对应的长期运行 Docker 沙箱容器。
+
+    容器以分离模式（-d）运行，绑定挂载项目目录，禁用网络访问，
+    并可配置 CPU 和内存资源限制。提供异步和同步的启停接口，
+    以及在容器内执行命令的能力。
+
+    Attributes:
+        settings: OpenHarness 配置对象。
+        session_id: 会话唯一标识符，用于构造容器名。
+        cwd: 项目工作目录路径，将作为绑定挂载的源和容器工作目录。
+    """
 
     settings: Settings
     session_id: str
@@ -69,18 +94,28 @@ class DockerSandboxSession:
     _running: bool = field(init=False, default=False)
 
     def __post_init__(self) -> None:
+        """初始化后根据 session_id 生成容器名称。"""
         self._container_name = f"openharness-sandbox-{self.session_id}"
 
     @property
     def container_name(self) -> str:
+        """返回沙箱容器的名称。"""
         return self._container_name
 
     @property
     def is_running(self) -> bool:
+        """返回沙箱容器是否正在运行。"""
         return self._running
 
     def _build_run_argv(self) -> list[str]:
-        """Build the ``docker run`` argv for container creation."""
+        """构建 ``docker run`` 命令参数列表。
+
+        包含容器名、网络禁用、资源限制、绑定挂载、环境变量等配置，
+        最终以 ``tail -f /dev/null`` 保持容器持续运行。
+
+        Returns:
+            list[str]: 完整的 docker run 参数列表。
+        """
         docker = shutil.which("docker") or "docker"
         sandbox = self.settings.sandbox
         docker_cfg = sandbox.docker
@@ -128,7 +163,14 @@ class DockerSandboxSession:
         return argv
 
     async def start(self) -> None:
-        """Create and start the sandbox container."""
+        """创建并启动沙箱容器。
+
+        首先确保 Docker 镜像可用（必要时自动构建），然后通过
+        ``docker run`` 启动容器。启动失败时抛出 SandboxUnavailableError。
+
+        Raises:
+            SandboxUnavailableError: 镜像不可用或容器启动失败。
+        """
         from openharness.sandbox.docker_image import ensure_image_available
 
         docker_cfg = self.settings.sandbox.docker
@@ -158,7 +200,7 @@ class DockerSandboxSession:
         logger.info("Docker sandbox started: %s", self._container_name)
 
     async def stop(self) -> None:
-        """Stop and remove the sandbox container."""
+        """异步停止并移除沙箱容器，发送 ``docker stop -t 5`` 后等待退出。"""
         if not self._running:
             return
         docker = shutil.which("docker") or "docker"
@@ -180,7 +222,7 @@ class DockerSandboxSession:
             logger.info("Docker sandbox stopped: %s", self._container_name)
 
     def stop_sync(self) -> None:
-        """Synchronous stop for use in atexit handlers."""
+        """同步停止容器，适用于 atexit 注册的清理回调。"""
         if not self._running:
             return
         docker = shutil.which("docker") or "docker"
@@ -205,10 +247,24 @@ class DockerSandboxSession:
         stderr: int | None = None,
         env: dict[str, str] | None = None,
     ) -> asyncio.subprocess.Process:
-        """Execute a command inside the sandbox container.
+        """在沙箱容器内执行命令。
 
-        Returns an ``asyncio.subprocess.Process`` with the same interface as
-        ``asyncio.create_subprocess_exec``.
+        通过 ``docker exec`` 在运行中的容器内启动子进程，
+        返回与 ``asyncio.create_subprocess_exec`` 相同接口的进程对象。
+
+        Args:
+            argv: 待执行的命令参数列表。
+            cwd: 容器内的工作目录。
+            stdin: 标准输入文件描述符。
+            stdout: 标准输出文件描述符。
+            stderr: 标准错误文件描述符。
+            env: 额外的环境变量字典。
+
+        Returns:
+            asyncio.subprocess.Process: 异步子进程对象。
+
+        Raises:
+            SandboxUnavailableError: 容器未在运行时抛出。
         """
         if not self._running:
             raise SandboxUnavailableError("Docker sandbox session is not running")

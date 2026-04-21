@@ -1,4 +1,16 @@
-"""Shared runtime assembly for headless and Textual UIs."""
+"""无头和 Textual UI 的共享运行时组装模块。
+
+本模块实现 OpenHarness 会话的核心运行时基础设施，负责：
+
+- RuntimeBundle：共享运行时对象包（API 客户端、引擎、工具注册表、MCP 管理器等）
+- build_runtime：组装完整的运行时环境（设置、API 客户端、MCP、工具、钩子、引擎）
+- start_runtime / close_runtime：会话生命周期管理（钩子执行、资源清理）
+- handle_line：统一的用户输入行处理（命令分发 + 模型交互）
+- sync_app_state / refresh_runtime_client：状态同步与运行时刷新
+
+RuntimeBundle 是所有 UI 模式（React TUI 后端、Textual 应用、打印模式、
+无头 worker）共享的核心状态容器。
+"""
 
 from __future__ import annotations
 
@@ -38,15 +50,29 @@ from openharness.tools import ToolRegistry, create_default_tool_registry
 from openharness.keybindings import load_keybindings
 
 PermissionPrompt = Callable[[str, str], Awaitable[bool]]
+"""权限确认回调类型：接收工具名称和拒绝原因，返回是否允许执行。"""
+
 AskUserPrompt = Callable[[str], Awaitable[str]]
+"""用户输入回调类型：接收问题文本，返回用户回答。"""
+
 SystemPrinter = Callable[[str], Awaitable[None]]
+"""系统消息打印回调类型。"""
+
 StreamRenderer = Callable[[StreamEvent], Awaitable[None]]
+"""流式事件渲染回调类型。"""
+
 ClearHandler = Callable[[], Awaitable[None]]
+"""输出清除回调类型。"""
 
 
 @dataclass
 class RuntimeBundle:
-    """Shared runtime objects for one interactive session."""
+    """单次交互会话的共享运行时对象包。
+
+    包含会话所需的所有核心依赖：API 客户端、查询引擎、工具注册表、
+    MCP 管理器、应用状态存储、钩子执行器、命令注册表等。
+    由 build_runtime 创建，传递给各种 UI 模式使用。
+    """
 
     api_client: SupportsStreamingMessages
     cwd: str
@@ -65,18 +91,17 @@ class RuntimeBundle:
     extra_plugin_roots: tuple[str, ...] = ()
 
     def current_settings(self):
-        """Return the effective settings for this session.
+        """返回当前会话的有效设置。
 
-        We persist most settings to disk (``~/.openharness/settings.json``), but
-        CLI options like ``--model``/``--api-format`` should remain in effect for
-        the lifetime of the running process. Without this overlay, issuing any
-        slash command (e.g. ``/fast``) would refresh UI state from disk and
-        "snap back" the model/provider to whatever is stored in the config file.
+        大部分设置持久化到磁盘（~/.openharness/settings.json），
+        但 CLI 选项（如 --model/--api-format）应在进程生命周期内保持生效。
+        没有此叠加层，执行任何斜杠命令（如 /fast）会从磁盘刷新 UI 状态，
+        导致 model/provider 被"弹回"到配置文件中存储的值。
         """
         return load_settings().merge_cli_overrides(**self.settings_overrides)
 
     def current_plugins(self):
-        """Return currently visible plugins for the working tree."""
+        """返回当前工作树可见的插件列表。"""
         return load_plugins(
             self.current_settings(),
             self.cwd,
@@ -84,11 +109,11 @@ class RuntimeBundle:
         )
 
     def hook_summary(self) -> str:
-        """Return the current hook summary."""
+        """返回当前钩子注册表的摘要文本。"""
         return load_hook_registry(self.current_settings(), self.current_plugins()).summary()
 
     def plugin_summary(self) -> str:
-        """Return the current plugin summary."""
+        """返回当前插件列表的摘要文本。"""
         plugins = self.current_plugins()
         if not plugins:
             return "No plugins discovered."
@@ -99,7 +124,7 @@ class RuntimeBundle:
         return "\n".join(lines)
 
     def mcp_summary(self) -> str:
-        """Return the current MCP summary."""
+        """返回当前 MCP 服务器连接状态的摘要文本。"""
         statuses = self.mcp_manager.list_statuses()
         if not statuses:
             return "No MCP servers configured."
@@ -115,7 +140,17 @@ class RuntimeBundle:
 
 
 def _resolve_api_client_from_settings(settings) -> SupportsStreamingMessages:
-    """Build the appropriate API client for the resolved settings."""
+    """根据解析后的设置构建相应的 API 客户端。
+
+    支持的提供商：
+    - copilot：CopilotClient（使用 GitHub Copilot 认证）
+    - openai_codex：CodexApiClient
+    - anthropic_claude：AnthropicApiClient（Claude OAuth）
+    - openai / openai_compat：OpenAICompatibleClient
+    - 默认：AnthropicApiClient（API Key 认证）
+
+    若未配置 API Key，打印错误提示并退出。
+    """
     # Ensure profile fields (base_url, model, api_format) are projected to settings
     settings = settings.materialize_active_profile()
 
@@ -189,7 +224,17 @@ async def build_runtime(
     extra_skill_dirs: Iterable[str | Path] | None = None,
     extra_plugin_roots: Iterable[str | Path] | None = None,
 ) -> RuntimeBundle:
-    """Build the shared runtime for an OpenHarness session."""
+    """构建 OpenHarness 会话的共享运行时。
+
+    完整流程：
+    1. 加载并合并设置（磁盘 + CLI 覆盖）
+    2. 加载插件、解析 API 客户端
+    3. 连接 MCP 服务器、创建工具注册表
+    4. 初始化应用状态、钩子执行器
+    5. 构建系统提示词、创建 QueryEngine
+    6. 恢复对话历史（如有）
+    7. 启动 Docker 沙箱（如配置）
+    """
     settings_overrides: dict[str, Any] = {
         "model": model,
         "max_turns": max_turns,
@@ -347,7 +392,7 @@ async def build_runtime(
 
 
 async def start_runtime(bundle: RuntimeBundle) -> None:
-    """Run session start hooks."""
+    """运行会话启动钩子。"""
     await bundle.hook_executor.execute(
         HookEvent.SESSION_START,
         {"cwd": bundle.cwd, "event": HookEvent.SESSION_START.value},
@@ -355,7 +400,14 @@ async def start_runtime(bundle: RuntimeBundle) -> None:
 
 
 async def close_runtime(bundle: RuntimeBundle) -> None:
-    """Close runtime-owned resources."""
+    """关闭运行时拥有的资源。
+
+    流程：
+    1. 停止 Docker 沙箱
+    2. 从会话消息中更新个性化规则（尽力而为）
+    3. 关闭 MCP 连接
+    4. 运行会话结束钩子
+    """
     from openharness.sandbox.session import stop_docker_sandbox
 
     await stop_docker_sandbox()
@@ -374,6 +426,7 @@ async def close_runtime(bundle: RuntimeBundle) -> None:
 
 
 def _last_user_text(messages: list[ConversationMessage]) -> str:
+    """从消息列表中查找最后一条用户文本消息。"""
     for msg in reversed(messages):
         if msg.role == "user" and msg.text.strip():
             return msg.text.strip()
@@ -381,13 +434,18 @@ def _last_user_text(messages: list[ConversationMessage]) -> str:
 
 
 def _truncate(text: str, limit: int) -> str:
+    """截断文本到指定长度，超出时添加省略号。""" str:
     if len(text) <= limit:
         return text
     return text[:limit] + "…"
 
 
 def _format_pending_tool_results(messages: list[ConversationMessage]) -> str | None:
-    """Render a compact summary when we stop after tool execution but before the follow-up model turn."""
+    """当引擎在工具执行后但模型响应前停止时，渲染挂起工具结果的紧凑摘要。
+
+    包含：提示信息、最后助手消息摘要、各工具调用与结果的简略表示，
+    以及 /continue 恢复提示。
+    """
     if not messages:
         return None
 
@@ -437,7 +495,7 @@ def _format_pending_tool_results(messages: list[ConversationMessage]) -> str | N
 
 
 def sync_app_state(bundle: RuntimeBundle) -> None:
-    """Refresh UI state from current settings and dynamic keybindings."""
+    """从当前设置和动态键绑定刷新 UI 状态。"""
     settings = bundle.current_settings()
     if bundle.enforce_max_turns:
         bundle.engine.set_max_turns(settings.max_turns)
@@ -466,7 +524,11 @@ def sync_app_state(bundle: RuntimeBundle) -> None:
 
 
 def refresh_runtime_client(bundle: RuntimeBundle) -> None:
-    """Refresh the active runtime client after provider/auth/profile changes."""
+    """在提供商/认证/配置文件变更后刷新运行时客户端。
+
+    重新解析 API 客户端（除非使用了外部客户端），更新引擎和钩子执行器，
+    同步应用状态。
+    """
     settings = bundle.current_settings()
     if not bundle.external_api_client:
         bundle.api_client = _resolve_api_client_from_settings(settings)
@@ -487,7 +549,16 @@ async def handle_line(
     render_event: StreamRenderer,
     clear_output: ClearHandler,
 ) -> bool:
-    """Handle one submitted line for either headless or TUI rendering."""
+    """处理一行提交的输入，用于无头或 TUI 渲染。
+
+    核心流程：
+    1. 尝试匹配斜杠命令，若匹配则执行命令处理器
+    2. 命令可能触发后续提示提交（submit_prompt）或挂起恢复（continue_pending）
+    3. 非命令输入：重建系统提示词，提交给引擎并流式渲染事件
+    4. 处理 MaxTurnsExceeded，保存会话快照，同步应用状态
+
+    返回 True 表示应继续会话，False 表示应退出。
+    """
     if not bundle.external_api_client:
         bundle.hook_executor.update_registry(
             load_hook_registry(bundle.current_settings(), bundle.current_plugins())
@@ -631,6 +702,10 @@ async def _render_command_result(
     clear_output: ClearHandler,
     render_event: StreamRenderer | None = None,
 ) -> None:
+    """渲染命令执行结果到输出。
+
+    处理清屏、恢复消息回放、普通消息输出等场景。
+    """
     if result.clear_screen:
         await clear_output()
     if result.replay_messages and render_event is not None:

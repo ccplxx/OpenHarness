@@ -1,4 +1,11 @@
-"""Content search tool with a pure-Python fallback."""
+"""文件内容正则搜索工具。
+
+本模块提供 GrepTool，用于在文件中搜索匹配正则表达式的内容。
+优先使用 ripgrep 进行高性能搜索，当 ripgrep 不可用时回退到纯 Python 实现。
+支持单文件搜索和目录递归搜索，支持大小写敏感/不敏感模式。
+搜索结果格式为 文件路径:行号:匹配行内容。
+该工具为只读工具。
+"""
 
 from __future__ import annotations
 
@@ -13,7 +20,16 @@ from openharness.tools.base import BaseTool, ToolExecutionContext, ToolResult
 
 
 class GrepToolInput(BaseModel):
-    """Arguments for the grep tool."""
+    """文件内容搜索工具的输入参数。
+
+    Attributes:
+        pattern: 要搜索的正则表达式
+        root: 搜索根目录，默认为当前工作目录
+        file_glob: 文件匹配模式，默认为 **/*（所有文件）
+        case_sensitive: 是否区分大小写，默认为 True
+        limit: 最大匹配数，范围 1-2000，默认 200
+        timeout_seconds: 超时时间（秒），范围 1-120，默认 20
+    """
 
     pattern: str = Field(description="Regular expression to search for")
     root: str | None = Field(default=None, description="Search root directory")
@@ -24,17 +40,31 @@ class GrepToolInput(BaseModel):
 
 
 class GrepTool(BaseTool):
-    """Search text files for a regex pattern."""
+    """在文本文件中搜索正则表达式匹配的工具。
+
+    优先使用 ripgrep，不可用时回退到纯 Python 实现。
+    """
 
     name = "grep"
     description = "Search file contents with a regular expression."
     input_model = GrepToolInput
 
     def is_read_only(self, arguments: GrepToolInput) -> bool:
-        del arguments
-        return True
+        """该工具为只读，不会修改任何文件。"""
 
     async def execute(self, arguments: GrepToolInput, context: ToolExecutionContext) -> ToolResult:
+        """执行文件内容搜索。
+
+        根据搜索目标是文件还是目录选择不同的搜索策略。
+        对于文件直接搜索，对于目录优先使用 ripgrep 递归搜索。
+
+        Args:
+            arguments: 包含搜索模式和选项的输入参数
+            context: 工具执行上下文
+
+        Returns:
+            格式化的搜索结果（文件路径:行号:匹配内容）
+        """
         root = _resolve_path(context.cwd, arguments.root) if arguments.root else context.cwd
         if root.is_file():
             display_base = _display_base(root, context.cwd)
@@ -84,6 +114,18 @@ class GrepTool(BaseTool):
 
 
 def _display_base(path: Path, cwd: Path) -> Path:
+    """计算显示路径的基准目录。
+
+    如果路径是 cwd 的子路径，使用 cwd 作为基准以显示相对路径；
+    否则使用路径的父目录作为基准。
+
+    Args:
+        path: 目标路径
+        cwd: 当前工作目录
+
+    Returns:
+        适合用于显示相对路径的基准路径
+    """
     try:
         path.relative_to(cwd)
     except ValueError:
@@ -99,6 +141,20 @@ def _python_grep_files(
     limit: int,
     display_base: Path,
 ) -> str:
+    """纯 Python 实现的文件内容搜索（ripgrep 不可用时的回退方案）。
+
+    遍历文件列表，逐行搜索正则匹配，跳过二进制文件。
+
+    Args:
+        paths: 可迭代的文件路径集合
+        pattern: 正则表达式
+        case_sensitive: 是否区分大小写
+        limit: 最大匹配数
+        display_base: 显示路径的基准目录
+
+    Returns:
+        格式化的搜索结果文本
+    """
     # Python fallback (kept for portability).
     flags = 0 if case_sensitive else re.IGNORECASE
     compiled = re.compile(pattern, flags)
@@ -128,6 +184,17 @@ def _python_grep_files(
 
 
 def _resolve_path(base: Path, candidate: str | None) -> Path:
+    """解析文件路径。
+
+    展开用户目录符号（~），将相对路径基于 base 解析为绝对路径。
+
+    Args:
+        base: 基准路径
+        candidate: 候选路径字符串，可为 None
+
+    Returns:
+        解析后的绝对路径
+    """
     path = Path(candidate or ".").expanduser()
     if not path.is_absolute():
         path = base / path
@@ -135,6 +202,18 @@ def _resolve_path(base: Path, candidate: str | None) -> Path:
 
 
 def _format_rg_result(matches: list[str], timeout_seconds: int) -> ToolResult:
+    """格式化 ripgrep 搜索结果。
+
+    检查是否存在超时标记，如果超时则在输出中添加超时提示。
+    超时时 is_error 设为 True。
+
+    Args:
+        matches: ripgrep 输出的匹配行列表
+        timeout_seconds: 超时时间（秒）
+
+    Returns:
+        格式化的 ToolResult
+    """
     timed_out = bool(matches and matches[-1] == _timeout_marker(timeout_seconds))
     rendered = matches[:-1] if timed_out else matches
     output = "\n".join(rendered) if rendered else "(no matches)"
@@ -156,7 +235,23 @@ async def _rg_grep(
     limit: int,
     timeout_seconds: int,
 ) -> list[str] | None:
-    """Return matches using ripgrep, or None if ripgrep is unavailable."""
+    """使用 ripgrep 在目录中搜索匹配内容。
+
+    构建 ripgrep 命令行参数，启动子进程并收集结果。
+    支持超时控制和 Docker 沙箱环境。
+    rg 返回码 0 表示找到匹配，1 表示未找到，其他值表示错误需回退。
+
+    Args:
+        root: 搜索根目录
+        pattern: 正则表达式
+        file_glob: 文件过滤模式
+        case_sensitive: 是否区分大小写
+        limit: 最大匹配数
+        timeout_seconds: 超时时间（秒）
+
+    Returns:
+        匹配行列表，ripgrep 不可用或出错时返回 None
+    """
     rg = shutil.which("rg")
     if not rg:
         return None
@@ -231,6 +326,21 @@ async def _rg_grep_file(
     display_base: Path,
     timeout_seconds: int,
 ) -> list[str] | None:
+    """使用 ripgrep 在单个文件中搜索匹配内容。
+
+    类似 _rg_grep，但针对单个文件搜索，输出格式带文件路径前缀。
+
+    Args:
+        path: 目标文件路径
+        pattern: 正则表达式
+        case_sensitive: 是否区分大小写
+        limit: 最大匹配数
+        display_base: 显示路径的基准目录
+        timeout_seconds: 超时时间（秒）
+
+    Returns:
+        匹配行列表，ripgrep 不可用或出错时返回 None
+    """
     rg = shutil.which("rg")
     if not rg:
         return None
@@ -295,6 +405,16 @@ async def _rg_grep_file(
 
 
 def _timeout_marker(timeout_seconds: int) -> str:
+    """生成超时标记字符串。
+
+    用于在匹配列表中标记搜索超时，以便后续格式化时识别。
+
+    Args:
+        timeout_seconds: 超时时间（秒）
+
+    Returns:
+        超时标记字符串
+    """
     return f"__OPENHARNESS_GREP_TIMEOUT__:{timeout_seconds}"
 
 
@@ -304,6 +424,16 @@ async def _collect_rg_matches(
     *,
     limit: int,
 ) -> None:
+    """从 ripgrep 进程的 stdout 收集匹配行。
+
+    逐行读取进程输出，解码为文本后添加到 matches 列表。
+    跳过超长行（超过缓冲区限制）继续读取。
+
+    Args:
+        process: ripgrep 子进程
+        matches: 用于收集结果的列表
+        limit: 最大匹配数
+    """
     assert process.stdout is not None
     while len(matches) < limit:
         try:
@@ -326,6 +456,17 @@ async def _collect_rg_file_matches(
     path: Path,
     display_base: Path,
 ) -> None:
+    """从 ripgrep 进程收集单文件搜索结果并添加路径前缀。
+
+    与 _collect_rg_matches 类似，但在每行结果前添加文件路径。
+
+    Args:
+        process: ripgrep 子进程
+        matches: 用于收集结果的列表
+        limit: 最大匹配数
+        path: 目标文件路径
+        display_base: 显示路径的基准目录
+    """
     assert process.stdout is not None
     while len(matches) < limit:
         try:
@@ -342,6 +483,13 @@ async def _collect_rg_file_matches(
 
 
 async def _terminate_process(process: asyncio.subprocess.Process) -> None:
+    """终止子进程。
+
+    先发送 SIGTERM，2 秒内未退出则发送 SIGKILL。
+
+    Args:
+        process: 要终止的异步子进程
+    """
     if process.returncode is not None:
         return
     process.terminate()
@@ -354,6 +502,17 @@ async def _terminate_process(process: asyncio.subprocess.Process) -> None:
 
 
 def _format_path(path: Path, display_base: Path) -> str:
+    """格式化文件路径为相对或绝对路径字符串。
+
+    尝试将路径转换为相对于 display_base 的相对路径，失败则使用绝对路径。
+
+    Args:
+        path: 目标路径
+        display_base: 基准路径
+
+    Returns:
+        相对路径或绝对路径字符串
+    """
     try:
         return str(path.relative_to(display_base))
     except ValueError:

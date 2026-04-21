@@ -1,4 +1,8 @@
-"""OpenHarness sandbox integration helpers."""
+"""OpenHarness 沙箱集成模块。
+
+本模块统一导出沙箱子系统的核心组件，包括沙箱运行时适配器（srt）、Docker 后端、
+路径验证器和会话管理器，为上层工具执行提供隔离的运行环境。
+"""
 
 from openharness.sandbox.adapter import (
     SandboxAvailability,

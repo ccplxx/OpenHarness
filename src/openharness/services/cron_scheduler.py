@@ -1,9 +1,10 @@
-"""Background cron scheduler daemon.
+"""后台 Cron 调度器守护进程模块。
 
-Runs as a standalone process (``oh cron start``) or can be embedded via
-:func:`run_scheduler_loop`.  Every tick it reads the cron registry, checks
-which enabled jobs are due, executes them, and records results in a history
-log.
+本模块实现了一个独立的 Cron 调度器进程，可通过 ``oh cron start`` 启动，
+也可通过 :func:`run_scheduler_loop` 嵌入式运行。调度器每隔固定时间间隔
+（TICK_INTERVAL_SECONDS）读取 Cron 注册表，检查哪些已启用的任务到期，
+执行这些任务，并将执行结果记录到历史日志文件中。同时提供 PID 文件管理、
+进程启停控制等守护进程基础设施。
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ from openharness.utils.shell import create_shell_subprocess
 logger = logging.getLogger(__name__)
 
 TICK_INTERVAL_SECONDS = 30
-"""How often the scheduler checks for due jobs."""
+"""调度器检查到期任务的时间间隔（秒）。"""
 
 
 # ---------------------------------------------------------------------------
@@ -39,12 +40,16 @@ TICK_INTERVAL_SECONDS = 30
 # ---------------------------------------------------------------------------
 
 def get_history_path() -> Path:
-    """Return the path to the cron execution history file."""
+    """返回 Cron 执行历史文件的路径。"""
     return get_data_dir() / "cron_history.jsonl"
 
 
 def append_history(entry: dict[str, Any]) -> None:
-    """Append one execution record to the history log."""
+    """将一条执行记录追加到历史日志文件（JSONL 格式）。
+
+    Args:
+        entry: 包含任务名称、执行状态、时间戳等信息的字典。
+    """
     path = get_history_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
@@ -52,7 +57,15 @@ def append_history(entry: dict[str, Any]) -> None:
 
 
 def load_history(*, limit: int = 50, job_name: str | None = None) -> list[dict[str, Any]]:
-    """Load the most recent execution history entries."""
+    """加载最近的历史执行记录。
+
+    Args:
+        limit: 最多返回的记录条数，默认 50。
+        job_name: 若指定，则只返回该任务名的记录。
+
+    Returns:
+        list[dict[str, Any]]: 按时间排序的执行记录列表（最新在末尾）。
+    """
     path = get_history_path()
     if not path.exists():
         return []
@@ -76,12 +89,18 @@ def load_history(*, limit: int = 50, job_name: str | None = None) -> list[dict[s
 # ---------------------------------------------------------------------------
 
 def get_pid_path() -> Path:
-    """Return the scheduler PID file path."""
+    """返回调度器 PID 文件的路径。"""
     return get_data_dir() / "cron_scheduler.pid"
 
 
 def read_pid() -> int | None:
-    """Read the PID of a running scheduler, or None."""
+    """读取当前运行中调度器的进程 PID。
+
+    若 PID 文件不存在或对应进程已终止，则清理过期文件并返回 None。
+
+    Returns:
+        int | None: 调度器进程 PID，不存在则返回 None。
+    """
     path = get_pid_path()
     if not path.exists():
         return None
@@ -100,24 +119,34 @@ def read_pid() -> int | None:
 
 
 def write_pid() -> None:
-    """Write the current process PID."""
+    """将当前进程 PID 写入 PID 文件。"""
     path = get_pid_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(str(os.getpid()) + "\n", encoding="utf-8")
 
 
 def remove_pid() -> None:
-    """Remove the PID file."""
+    """删除 PID 文件。"""
     get_pid_path().unlink(missing_ok=True)
 
 
 def is_scheduler_running() -> bool:
-    """Return True if a scheduler process is alive."""
+    """检查调度器进程是否仍在运行。
+
+    Returns:
+        bool: 调度器进程存活返回 True。
+    """
     return read_pid() is not None
 
 
 def stop_scheduler() -> bool:
-    """Send SIGTERM to the running scheduler. Returns True if killed."""
+    """向运行中的调度器发送 SIGTERM 信号以停止其运行。
+
+    若进程在短时间内未退出，则发送 SIGKILL 强制终止。
+
+    Returns:
+        bool: 成功终止返回 True，调度器未运行或终止失败返回 False。
+    """
     pid = read_pid()
     if pid is None:
         return False
@@ -148,7 +177,18 @@ def stop_scheduler() -> bool:
 # ---------------------------------------------------------------------------
 
 async def execute_job(job: dict[str, Any]) -> dict[str, Any]:
-    """Run a single cron job and return a history entry."""
+    """运行单个 Cron 任务并返回执行历史记录条目。
+
+    通过创建 Shell 子进程执行任务命令，设置 300 秒超时限制。
+    执行完成后更新注册表中的 last_run/next_run 并追加历史记录。
+    标准输出和标准错误仅保留最后 2000 个字符。
+
+    Args:
+        job: 任务字典，须包含 ``name``、``command`` 字段。
+
+    Returns:
+        dict[str, Any]: 包含任务名、执行状态、返回码、输出等信息的历史条目。
+    """
     name = job["name"]
     command = job["command"]
     cwd = Path(job.get("cwd") or ".").expanduser()
@@ -236,7 +276,15 @@ async def execute_job(job: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _jobs_due(jobs: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
-    """Return jobs whose next_run is at or before *now*."""
+    """从任务列表中筛选出 next_run 不晚于当前时间的已启用任务。
+
+    Args:
+        jobs: 全部任务列表。
+        now: 当前时间基准。
+
+    Returns:
+        list[dict[str, Any]]: 到期任务的子列表。
+    """
     due: list[dict[str, Any]] = []
     for job in jobs:
         if not job.get("enabled", True):
@@ -259,7 +307,14 @@ def _jobs_due(jobs: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]
 
 
 async def run_scheduler_loop(*, once: bool = False) -> None:
-    """Main scheduler loop.  Runs until SIGTERM or *once* is True (test mode)."""
+    """调度器主循环，持续运行直到收到 SIGTERM 信号或 *once* 为 True。
+
+    每次循环迭代：加载注册表 → 筛选到期任务 → 并发执行 → 等待下一轮。
+    当 ``once=True`` 时仅执行一轮后退出（用于测试模式）。
+
+    Args:
+        once: 若为 True，仅执行一次检查后退出。
+    """
     shutdown = asyncio.Event()
 
     def _on_signal() -> None:
@@ -306,7 +361,7 @@ async def run_scheduler_loop(*, once: bool = False) -> None:
 # ---------------------------------------------------------------------------
 
 def _run_daemon() -> None:
-    """Entry point for the scheduler subprocess."""
+    """调度器子进程入口点，配置日志后启动主循环。"""
     log_file = get_logs_dir() / "cron_scheduler.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
@@ -318,7 +373,17 @@ def _run_daemon() -> None:
 
 
 def start_daemon() -> int:
-    """Fork and start the scheduler daemon.  Returns the child PID."""
+    """通过 fork 创建调度器守护进程并启动。
+
+    子进程脱离终端（setsid），重定向标准 I/O 至 /dev/null，
+    以独立守护进程方式运行调度器主循环。
+
+    Returns:
+        int: 子进程的 PID。
+
+    Raises:
+        RuntimeError: 调度器已在运行时抛出。
+    """
     existing = read_pid()
     if existing is not None:
         raise RuntimeError(f"Scheduler already running (pid={existing})")
@@ -343,7 +408,7 @@ def start_daemon() -> int:
 
 
 def scheduler_status() -> dict[str, Any]:
-    """Return a status dict about the scheduler."""
+    """返回调度器的状态信息字典，包含运行状态、PID、任务计数和文件路径。"""
     pid = read_pid()
     log_path = get_logs_dir() / "cron_scheduler.log"
     jobs = load_cron_jobs()

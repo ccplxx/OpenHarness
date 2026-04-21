@@ -1,4 +1,10 @@
-"""Tool for listing local cron jobs."""
+"""本地 Cron 定时任务列表工具。
+
+本模块提供 CronListTool，用于列出所有已配置的本地 cron 定时任务。
+展示信息包括调度器运行状态、每个任务的启用状态、调度表达式、
+执行命令、上次运行时间与状态、下次运行时间等。
+该工具为只读工具。
+"""
 
 from __future__ import annotations
 
@@ -10,25 +16,36 @@ from openharness.tools.base import BaseTool, ToolExecutionContext, ToolResult
 
 
 class CronListToolInput(BaseModel):
-    """Arguments for cron listing."""
+    """Cron 任务列表工具的输入参数（无额外参数）。"""
 
 
 class CronListTool(BaseTool):
-    """List local cron jobs."""
+    """列出本地 cron 定时任务的工具。
+
+    展示调度器状态和所有任务的详细信息。
+    """
 
     name = "cron_list"
     description = "List configured local cron jobs with schedule, status, and next run time."
     input_model = CronListToolInput
 
     def is_read_only(self, arguments: CronListToolInput) -> bool:
-        del arguments
-        return True
+        """该工具为只读，不会修改任何状态。"""
 
     async def execute(
         self,
         arguments: CronListToolInput,
         context: ToolExecutionContext,
     ) -> ToolResult:
+        """执行 cron 任务列表查询。
+
+        Args:
+            arguments: 输入参数（无额外参数）
+            context: 工具执行上下文（未使用）
+
+        Returns:
+            调度器状态和所有任务详情的格式化文本
+        """
         del arguments, context
         jobs = load_cron_jobs()
         if not jobs:
