@@ -10,7 +10,7 @@ from openharness.api.usage import UsageSnapshot
 
 
 class CostTracker:
-    """用量聚合追踪器。
+    """Token用例追踪器。
 
     在会话的整个生命周期内持续累积 API 调用的 token 用量（input_tokens / output_tokens），
     每次模型响应后将 UsageSnapshot 叠加到运行总计中，供上层查询总消耗。

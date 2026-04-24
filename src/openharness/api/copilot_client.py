@@ -1,12 +1,12 @@
-"""GitHub Copilot API client for OpenHarness.
+"""GitHub Copilot API 客户端模块。
 
-Wraps :class:`OpenAICompatibleClient` with Copilot-specific headers.
-The Copilot chat endpoint is OpenAI-compatible, so all message/tool
-conversion is delegated to the inner client.
+本模块实现了 OpenHarness 与 GitHub Copilot API 的交互客户端。
+Copilot 的聊天端点与 OpenAI API 兼容，因此消息和工具的转换
+委托给内部的 :class:`OpenAICompatibleClient` 处理。
 
-Authentication uses the persisted GitHub OAuth token directly
-(``Authorization: Bearer <token>``) — no additional token exchange
-is required.
+认证使用持久化的 GitHub OAuth 令牌（``Authorization: Bearer <token>``），
+无需额外的令牌交换。客户端在初始化时自动添加 Copilot 特有的请求头
+（如 ``Openai-Intent: conversation-edits``）和 User-Agent 标识。
 """
 
 from __future__ import annotations
@@ -46,22 +46,17 @@ COPILOT_DEFAULT_MODEL = "gpt-4o"
 
 
 class CopilotClient:
-    """Copilot-aware API client implementing ``SupportsStreamingMessages``.
+    """支持 Copilot 的 API 客户端，实现 ``SupportsStreamingMessages`` 协议。
 
-    Uses the GitHub OAuth token directly as a Bearer token for the
-    Copilot API.  No token exchange or session management is needed.
+    直接使用 GitHub OAuth 令牌作为 Bearer 令牌访问 Copilot API，
+    无需令牌交换或会话管理。内部委托 :class:`OpenAICompatibleClient`
+    处理所有消息和工具转换。
 
-    Parameters
-    ----------
-    github_token:
-        GitHub OAuth token (``ghu_...`` / ``gho_...``).  If *None*, the
-        token is loaded from ``~/.openharness/copilot_auth.json``.
-    enterprise_url:
-        Optional enterprise domain.  If *None*, loaded from the
-        persisted auth file (falls back to public GitHub).
-    model:
-        Default model to request.  Can be overridden per-request via
-        ``ApiMessageRequest.model``.
+    Attributes:
+        _token: GitHub OAuth 令牌。
+        _enterprise_url: GitHub Enterprise URL（可能为 ``None``）。
+        _model: 默认模型名称，可在请求时被覆盖。
+        _inner: 内部的 OpenAI 兼容客户端实例。
     """
 
     def __init__(
@@ -71,6 +66,21 @@ class CopilotClient:
         enterprise_url: str | None = None,
         model: str | None = None,
     ) -> None:
+        """初始化 Copilot 客户端。
+
+        优先使用显式传入的令牌，若未提供则从持久化的认证文件中加载。
+        企业 URL 的解析优先级为：显式参数 > 持久化认证文件 > None（公共 GitHub）。
+
+        Args:
+            github_token: GitHub OAuth 令牌（``ghu_...`` / ``gho_...``），
+                若为 ``None`` 则从 ``~/.openharness/copilot_auth.json`` 加载。
+            enterprise_url: 可选的 GitHub Enterprise 域名，
+                若为 ``None`` 则从持久化认证文件加载（回退到公共 GitHub）。
+            model: 默认请求的模型名称，可在请求时通过 ``ApiMessageRequest.model`` 覆盖。
+
+        Raises:
+            AuthenticationFailure: 当未找到 GitHub Copilot 令牌时抛出。
+        """
         auth_info = load_copilot_auth()
         token = github_token or (auth_info.github_token if auth_info else None)
         if not token:
@@ -110,13 +120,17 @@ class CopilotClient:
         )
 
     async def stream_message(self, request: ApiMessageRequest) -> AsyncIterator[ApiStreamEvent]:
-        """Stream a chat completion from the Copilot API.
+        """从 Copilot API 流式获取聊天补全结果。
 
-        Satisfies the ``SupportsStreamingMessages`` protocol expected by
-        the OpenHarness query engine.
+        实现 OpenHarness 查询引擎期望的 ``SupportsStreamingMessages`` 协议。
+        若构造时指定了默认模型，则覆盖请求中的模型标识；
+        否则直接使用请求中的模型标识。
 
-        If a *model* was provided at construction time it overrides the
-        model in *request*; otherwise the request model is passed through.
+        Args:
+            request: API 消息请求对象。
+
+        Returns:
+            异步迭代器，依次产生流式事件。
         """
         effective_model = self._model or request.model
         patched = ApiMessageRequest(

@@ -1,4 +1,14 @@
-"""Provider/auth capability helpers."""
+"""提供商认证与能力检测辅助模块。
+
+本模块提供提供商（Provider）的元数据解析和能力检测功能，
+用于 UI 展示和诊断。核心功能包括：
+
+1. **提供商检测**（:func:`detect_provider`）：根据配置设置推断当前活跃的提供商，
+   返回提供商名称、认证类型和语音支持状态等信息。
+2. **认证状态查询**（:func:`auth_status`）：返回当前提供商认证状态的紧凑字符串描述，
+   供状态栏或诊断输出使用。
+3. **ProviderInfo 数据类**：封装提供商的元数据，包括名称、认证类型、语音支持状态等。
+"""
 
 from __future__ import annotations
 
@@ -30,7 +40,14 @@ _VOICE_REASON: dict[str, str] = {
 
 @dataclass(frozen=True)
 class ProviderInfo:
-    """Resolved provider metadata for UI and diagnostics."""
+    """已解析的提供商元数据，用于 UI 展示和诊断。
+
+    Attributes:
+        name: 提供商规范名称（如 ``"anthropic"``、``"openai-compatible"``、``"github_copilot"``）。
+        auth_kind: 认证类型（``"api_key"``、``"oauth_device"``、``"external_oauth"``）。
+        voice_supported: 是否支持语音模式（当前所有提供商均返回 ``False``）。
+        voice_reason: 语音模式不支持的原因说明。
+    """
 
     name: str
     auth_kind: str
@@ -39,7 +56,21 @@ class ProviderInfo:
 
 
 def detect_provider(settings: Settings) -> ProviderInfo:
-    """Infer the active provider and rough capability set using the registry."""
+    """使用注册表推断当前活跃的提供商及其能力集。
+
+    按以下优先级检测提供商：
+    1. Codex 订阅（``openai_codex``）
+    2. Claude 订阅（``anthropic_claude``）
+    3. Copilot（``api_format="copilot"``）
+    4. 通过注册表根据模型名、API Key 前缀和 Base URL 关键词检测
+    5. 回退：根据 ``api_format`` 选择 Anthropic 或 OpenAI 兼容默认
+
+    Args:
+        settings: 当前的配置设置对象。
+
+    Returns:
+        包含提供商名称、认证类型和能力信息的 :class:`ProviderInfo` 对象。
+    """
     if settings.provider == "openai_codex":
         return ProviderInfo(
             name="openai-codex",
@@ -94,7 +125,23 @@ def detect_provider(settings: Settings) -> ProviderInfo:
 
 
 def auth_status(settings: Settings) -> str:
-    """Return a compact auth status string."""
+    """返回当前提供商认证状态的紧凑字符串描述。
+
+    根据提供商类型和认证配置，返回以下格式的状态字符串：
+    - ``"configured"`` — 已配置认证凭据。
+    - ``"configured (enterprise: <url>)"`` — 已配置企业版 Copilot。
+    - ``"configured (external: <source>)"`` — 已配置外部认证源。
+    - ``"missing (run 'oh auth copilot-login')"`` — 缺少凭据并提示登录命令。
+    - ``"expired"`` / ``"refreshable"`` — Claude 订阅令牌过期/可刷新。
+    - ``"invalid base_url"`` — Claude 订阅的 Base URL 为第三方端点。
+    - ``"missing"`` — 通用缺失状态。
+
+    Args:
+        settings: 当前的配置设置对象。
+
+    Returns:
+        认证状态描述字符串。
+    """
     if settings.api_format == "copilot":
         from openharness.api.copilot_auth import load_copilot_auth
 

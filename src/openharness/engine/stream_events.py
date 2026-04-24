@@ -42,8 +42,8 @@ class AssistantTurnComplete:
     携带完整的消息对象和本轮的 token 用量快照。
     """
 
-    message: ConversationMessage
-    usage: UsageSnapshot
+    message: ConversationMessage  # role + content
+    usage: UsageSnapshot  # input token + output token
 
 
 @dataclass(frozen=True)

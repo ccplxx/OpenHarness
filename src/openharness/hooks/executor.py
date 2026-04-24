@@ -39,7 +39,9 @@ class HookExecutionContext:
 
 
 class HookExecutor:
-    """Execute hooks for lifecycle events."""
+    """Execute hooks for lifecycle events.
+    Hook执行器
+    """
 
     def __init__(self, registry: HookRegistry, context: HookExecutionContext) -> None:
         self._registry = registry

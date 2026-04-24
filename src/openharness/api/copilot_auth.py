@@ -1,17 +1,18 @@
-"""GitHub Copilot OAuth device-flow authentication.
+"""GitHub Copilot OAuth 设备码认证模块。
 
-Flow:
-1. Device code request  → user visits URL and enters code
-2. Poll for OAuth token → get GitHub access token
-3. Use token directly   → ``Authorization: Bearer <token>`` to Copilot API
+本模块实现了 GitHub OAuth 设备码授权流程，用于获取 GitHub Copilot 的访问令牌。
 
-Supports two deployment types:
-- **github.com** — public GitHub, API at ``https://api.githubcopilot.com``
-- **enterprise**  — GitHub Enterprise (data-residency / self-hosted),
-  API at ``https://copilot-api.<domain>``
+认证流程：
+1. 请求设备码 → 用户访问 URL 并输入验证码
+2. 轮询 OAuth 令牌 → 获取 GitHub 访问令牌
+3. 直接使用令牌 → 通过 ``Authorization: Bearer <token>`` 访问 Copilot API
 
-The GitHub OAuth token (and optional enterprise URL) are persisted to
-``~/.openharness/copilot_auth.json``.
+支持两种部署类型：
+- **github.com** — 公共 GitHub，API 地址为 ``https://api.githubcopilot.com``
+- **企业版** — GitHub Enterprise（数据驻留/自托管），API 地址为 ``https://copilot-api.<domain>``
+
+GitHub OAuth 令牌（及可选的企业 URL）持久化存储在
+``~/.openharness/copilot_auth.json`` 文件中。
 """
 
 from __future__ import annotations
@@ -46,10 +47,16 @@ _AUTH_FILE_NAME = "copilot_auth.json"
 
 
 def copilot_api_base(enterprise_url: str | None = None) -> str:
-    """Return the Copilot API base URL.
+    """返回 Copilot API 的 Base URL。
 
-    For public GitHub this is ``https://api.githubcopilot.com``.
-    For enterprise it is ``https://copilot-api.<domain>``.
+    对于公共 GitHub，返回 ``https://api.githubcopilot.com``。
+    对于企业版，返回 ``https://copilot-api.<domain>``。
+
+    Args:
+        enterprise_url: GitHub Enterprise 的 URL，若为 ``None`` 则使用公共 GitHub。
+
+    Returns:
+        Copilot API 的 Base URL 字符串。
     """
     if enterprise_url:
         domain = enterprise_url.replace("https://", "").replace("http://", "").rstrip("/")
@@ -64,7 +71,17 @@ def copilot_api_base(enterprise_url: str | None = None) -> str:
 
 @dataclass(frozen=True)
 class DeviceCodeResponse:
-    """Parsed response from the GitHub device-code endpoint."""
+    """GitHub 设备码端点响应的解析结果数据类。
+
+    包含设备码授权流程中所需的全部信息，供后续轮询使用。
+
+    Attributes:
+        device_code: 设备码，用于后续轮询访问令牌。
+        user_code: 用户需要输入的验证码。
+        verification_uri: 用户需要访问的验证 URL。
+        interval: 轮询间隔秒数。
+        expires_in: 设备码的有效期秒数。
+    """
 
     device_code: str
     user_code: str
@@ -75,13 +92,28 @@ class DeviceCodeResponse:
 
 @dataclass
 class CopilotAuthInfo:
-    """Persisted + runtime auth state for Copilot."""
+    """Copilot 的持久化与运行时认证状态数据类。
+
+    存储已持久化的 GitHub OAuth 令牌和可选的企业 URL，
+    并提供计算属性获取对应的 Copilot API Base URL。
+
+    Attributes:
+        github_token: GitHub OAuth 访问令牌。
+        enterprise_url: GitHub Enterprise 的 URL，若为 ``None`` 表示使用公共 GitHub。
+    """
 
     github_token: str
     enterprise_url: str | None = None
 
     @property
     def api_base(self) -> str:
+        """计算并返回 Copilot API 的 Base URL。
+
+        根据是否配置了企业 URL，自动推导对应的 API 地址。
+
+        Returns:
+            Copilot API 的 Base URL 字符串。
+        """
         return copilot_api_base(self.enterprise_url)
 
 
@@ -95,7 +127,15 @@ def _auth_file_path() -> Path:
 
 
 def save_copilot_auth(token: str, *, enterprise_url: str | None = None) -> None:
-    """Persist the GitHub OAuth token (and optional enterprise URL) to disk."""
+    """将 GitHub OAuth 令牌（及可选的企业 URL）持久化到磁盘。
+
+    使用原子写入方式将认证信息保存到 ``~/.openharness/copilot_auth.json``，
+    文件权限设为 0600（仅所有者可读写）。
+
+    Args:
+        token: GitHub OAuth 访问令牌。
+        enterprise_url: 可选的 GitHub Enterprise URL。
+    """
     path = _auth_file_path()
     payload: dict[str, Any] = {"github_token": token}
     if enterprise_url:
@@ -109,7 +149,15 @@ def save_copilot_auth(token: str, *, enterprise_url: str | None = None) -> None:
 
 
 def load_copilot_auth() -> CopilotAuthInfo | None:
-    """Load the persisted Copilot auth, or return None."""
+    """从磁盘加载已持久化的 Copilot 认证信息。
+
+    读取 ``~/.openharness/copilot_auth.json`` 文件，解析其中的
+    GitHub OAuth 令牌和企业 URL。若文件不存在、格式无效或缺少
+    令牌字段，返回 ``None``。
+
+    Returns:
+        Copilot 认证信息对象，若无法加载则返回 ``None``。
+    """
     path = _auth_file_path()
     if not path.exists():
         return None
@@ -132,13 +180,24 @@ save_github_token = save_copilot_auth
 
 
 def load_github_token() -> str | None:
-    """Load just the persisted GitHub OAuth token, or return None."""
+    """仅加载已持久化的 GitHub OAuth 令牌。
+
+    这是 :func:`load_copilot_auth` 的便捷封装，仅返回令牌字符串。
+    保留此函数是为了向后兼容。
+
+    Returns:
+        GitHub OAuth 令牌字符串，若未找到则返回 ``None``。
+    """
     info = load_copilot_auth()
     return info.github_token if info else None
 
 
 def clear_github_token() -> None:
-    """Remove persisted Copilot auth."""
+    """删除已持久化的 Copilot 认证信息。
+
+    删除 ``~/.openharness/copilot_auth.json`` 文件。
+    若文件不存在则静默跳过。
+    """
     path = _auth_file_path()
     if path.exists():
         path.unlink()
@@ -155,7 +214,21 @@ def request_device_code(
     client_id: str = COPILOT_CLIENT_ID,
     github_domain: str = "github.com",
 ) -> DeviceCodeResponse:
-    """Start the OAuth device flow and return the device/user codes."""
+    """启动 OAuth 设备码流程，返回设备码和用户验证码。
+
+    向 GitHub 的设备码端点发送请求，获取设备码、用户验证码和验证 URL。
+    用户需要在浏览器中访问验证 URL 并输入验证码完成授权。
+
+    Args:
+        client_id: GitHub OAuth 应用的 Client ID。
+        github_domain: GitHub 域名，默认为 ``github.com``。
+
+    Returns:
+        包含设备码、用户码、验证 URL 等信息的 :class:`DeviceCodeResponse` 对象。
+
+    Raises:
+        httpx.HTTPStatusError: 当请求失败时抛出。
+    """
     url = f"https://{github_domain}/login/device/code"
     resp = httpx.post(
         url,
@@ -186,12 +259,26 @@ def poll_for_access_token(
     timeout: float = 900,
     progress_callback: Any | None = None,
 ) -> str:
-    """Poll GitHub until the user authorises, returning the OAuth access token.
+    """轮询 GitHub 等待用户完成授权，返回 OAuth 访问令牌。
 
-    *progress_callback*, if provided, is called with ``(poll_number, elapsed_seconds)``
-    before each poll so callers can show progress feedback.
+    按指定间隔持续轮询 GitHub 的令牌端点，直到用户在浏览器中
+    完成授权或超时。每次轮询前添加安全裕量以避免触发服务端速率限制。
+    若收到 ``slow_down`` 错误，自动增加轮询间隔。
 
-    Raises ``RuntimeError`` on expiry or unexpected error.
+    Args:
+        device_code: 设备码，由 :func:`request_device_code` 返回。
+        interval: 轮询间隔秒数。
+        client_id: GitHub OAuth 应用的 Client ID。
+        github_domain: GitHub 域名。
+        timeout: 超时秒数，默认为 900 秒（15 分钟）。
+        progress_callback: 进度回调函数，接收 ``(poll_number, elapsed_seconds)`` 参数，
+            用于向调用者显示轮询进度。
+
+    Returns:
+        GitHub OAuth 访问令牌字符串。
+
+    Raises:
+        RuntimeError: 当超时或遇到意外错误时抛出。
     """
     url = f"https://{github_domain}/login/oauth/access_token"
     poll_interval = float(interval)

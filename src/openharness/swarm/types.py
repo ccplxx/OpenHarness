@@ -53,7 +53,7 @@ class CreatePaneResult:
     """是否为首个智能体面板（影响布局策略）。"""
 
 
-@runtime_checkable
+@runtime_checkable  # 运行时检查；Protocol不需要显式继承，只要实现了协议定义的方法，就自动满足协议， 类似interface
 class PaneBackend(Protocol):
     """面板管理后端协议（tmux / iTerm2）。
 
@@ -68,7 +68,7 @@ class PaneBackend(Protocol):
 
     @property
     def display_name(self) -> str:
-        """后端的人类可读显示名称。"""
+        """人类可读显示名称。"""
         ...
 
     @property

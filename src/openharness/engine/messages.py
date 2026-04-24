@@ -50,7 +50,7 @@ class ImageBlock(BaseModel):
         自动推断 MIME 类型，仅接受 image/* 类型的文件，
         否则抛出 ValueError。
         """
-        resolved = Path(path).expanduser().resolve()
+        resolved = Path(path).expanduser().resolve()  # 解析为绝对路径
         media_type, _ = mimetypes.guess_type(str(resolved))
         if not media_type or not media_type.startswith("image/"):
             raise ValueError(f"Unsupported image attachment: {resolved}")
@@ -86,7 +86,7 @@ class ToolResultBlock(BaseModel):
 
 ContentBlock = Annotated[
     TextBlock | ImageBlock | ToolUseBlock | ToolResultBlock,
-    Field(discriminator="type"),
+    Field(discriminator="type"),  # 通过 "type" 字段来区分不同的类型
 ]
 """内容块联合类型。
 
@@ -109,7 +109,7 @@ class ConversationMessage(BaseModel):
     @field_validator("content", mode="before")
     @classmethod
     def _normalize_content(cls, value: Any) -> list[Any]:
-        """在内容块验证之前规范化遗留/空值载荷。
+        """在字段验证之前对 content 字段进行预处理和标准化。
 
         将 None 值转换为空列表，兼容旧版消息格式中 content 为 null 的情况。
         """

@@ -1,12 +1,15 @@
-"""
-LLM Provider Registry — single source of truth for provider metadata.
+"""LLM 提供商注册表 — 提供商元数据的唯一真实来源。
 
-Adding a new provider:
-  1. Add a ProviderSpec to PROVIDERS below.
-  Done. Detection, display, and config all derive from here.
+本模块维护了 OpenHarness 支持的所有 LLM 提供商的元数据注册表。
+每个提供商以 :class:`ProviderSpec` 数据类定义，包含名称、关键词、
+环境变量、后端类型、检测规则等元数据。
 
-Order matters — it controls match priority. Gateways and cloud providers first,
-standard providers by keyword, local/special providers last.
+添加新提供商的方法：
+  1. 在 :data:`PROVIDERS` 元组中添加一个 :class:`ProviderSpec` 即可。
+  检测、展示和配置均从此注册表自动推导。
+
+注册表的顺序很重要 — 它控制匹配优先级。网关和云提供商优先，
+标准提供商按关键词匹配，本地/特殊提供商最后。
 """
 
 from __future__ import annotations
@@ -16,12 +19,26 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ProviderSpec:
-    """One LLM provider's metadata.
+    """单个 LLM 提供商的元数据定义。
 
-    backend_type:
-      "anthropic"    — Anthropic SDK (default for claude-* models)
-      "openai_compat" — OpenAI-compatible REST API
-      "copilot"      — GitHub Copilot OAuth flow
+    描述了提供商的身份、路由、自动检测信号和分类标志。
+    backend_type 取值说明：
+      - ``"anthropic"`` — 使用 Anthropic SDK（claude-* 模型的默认选择）
+      - ``"openai_compat"`` — 使用 OpenAI 兼容的 REST API
+      - ``"copilot"`` — 使用 GitHub Copilot OAuth 流程
+
+    Attributes:
+        name: 规范名称，如 ``"dashscope"``。
+        keywords: 用于模型名检测的关键词元组（小写），如 ``("qwen", "dashscope")``。
+        env_key: 主要的 API Key 环境变量名。
+        display_name: 在状态/诊断中显示的名称，若为空则自动从 name 生成。
+        backend_type: 后端类型（``"anthropic"`` | ``"openai_compat"`` | ``"copilot"``）。
+        default_base_url: 该提供商的默认 Base URL。
+        detect_by_key_prefix: 通过 API Key 前缀匹配，如 ``"sk-or-"``。
+        detect_by_base_keyword: 通过 Base URL 中的子串匹配。
+        is_gateway: 是否为网关型提供商（可路由任何模型，如 OpenRouter）。
+        is_local: 是否为本地部署（如 vLLM、Ollama）。
+        is_oauth: 是否使用 OAuth 认证（而非 API Key）。
     """
 
     # Identity
@@ -45,6 +62,13 @@ class ProviderSpec:
 
     @property
     def label(self) -> str:
+        """返回提供商的可读标签。
+
+        若设置了 ``display_name`` 则直接使用，否则将 ``name`` 转为标题格式。
+
+        Returns:
+            提供商的显示标签字符串。
+        """
         return self.display_name or self.name.title()
 
 
@@ -360,7 +384,16 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
 
 
 def find_by_name(name: str) -> ProviderSpec | None:
-    """Find a provider spec by canonical name, e.g. "dashscope"."""
+    """通过规范名称查找提供商规格。
+
+    在注册表中按名称精确匹配查找。
+
+    Args:
+        name: 提供商的规范名称（如 ``"dashscope"``）。
+
+    Returns:
+        匹配的 :class:`ProviderSpec` 对象，若未找到则返回 ``None``。
+    """
     for spec in PROVIDERS:
         if spec.name == name:
             return spec
@@ -368,7 +401,17 @@ def find_by_name(name: str) -> ProviderSpec | None:
 
 
 def _match_by_model(model: str) -> ProviderSpec | None:
-    """Match a standard/gateway provider by model-name keyword (case-insensitive)."""
+    """通过模型名关键词匹配标准/网关提供商（不区分大小写）。
+
+    首先尝试模型名中的提供商前缀精确匹配（如 ``deepseek/...`` → deepseek），
+    然后回退到关键词扫描。仅匹配非本地、非 OAuth 的标准提供商和网关。
+
+    Args:
+        model: 模型标识字符串。
+
+    Returns:
+        匹配的 :class:`ProviderSpec` 对象，若未找到则返回 ``None``。
+    """
     model_lower = model.lower()
     model_normalized = model_lower.replace("-", "_")
     model_prefix = model_lower.split("/", 1)[0] if "/" in model_lower else ""
@@ -396,12 +439,20 @@ def detect_provider_from_registry(
     api_key: str | None = None,
     base_url: str | None = None,
 ) -> ProviderSpec | None:
-    """Detect the best-matching ProviderSpec for the given inputs.
+    """根据给定输入检测最佳匹配的提供商规格。
 
-    Detection priority:
-      1. api_key prefix  (e.g. "sk-or-" → OpenRouter)
-      2. base_url keyword (e.g. "aihubmix" in URL → AiHubMix)
-      3. model name keyword (e.g. "qwen" → DashScope)
+    检测优先级：
+      1. API Key 前缀匹配（如 ``"sk-or-"`` → OpenRouter）
+      2. Base URL 关键词匹配（如 URL 中含 ``"aihubmix"`` → AiHubMix）
+      3. 模型名关键词匹配（如 ``"qwen"`` → DashScope）
+
+    Args:
+        model: 模型标识字符串。
+        api_key: API 密钥，用于前缀匹配。
+        base_url: API 端点 URL，用于关键词匹配。
+
+    Returns:
+        最佳匹配的 :class:`ProviderSpec` 对象，若均不匹配则返回 ``None``。
     """
     # 1. api_key prefix
     if api_key:

@@ -11,7 +11,7 @@ class HookRegistry:
     """Store hooks grouped by event."""
 
     def __init__(self) -> None:
-        self._hooks: dict[HookEvent, list[HookDefinition]] = defaultdict(list)
+        self._hooks: dict[HookEvent, list[HookDefinition]] = defaultdict(list)  # 不同类型的hook 被存储在_hooks中
 
     def register(self, event: HookEvent, hook: HookDefinition) -> None:
         """Register one hook."""
