@@ -17,3 +17,4 @@ class HookEvent(str, Enum):
     USER_PROMPT_SUBMIT = "user_prompt_submit"
     NOTIFICATION = "notification"
     STOP = "stop"
+    SUBAGENT_STOP = "subagent_stop"

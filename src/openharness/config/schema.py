@@ -71,14 +71,9 @@ class BaseChannelConfig(_CompatModel):
 
 
 class TelegramConfig(BaseChannelConfig):
-    """Telegram 通道配置。
-
-    通过 Bot Token 接入 Telegram，支持指定目标 Chat ID。
-
-    属性：
-        token: Telegram Bot 的 API Token。
-        chat_id: 目标聊天的 ID，可为 None（由运行时确定）。
-    """
+    token: str = ""
+    chat_id: str | None = None
+    proxy: str | None = None
 
 
 class SlackConfig(BaseChannelConfig):

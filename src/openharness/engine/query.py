@@ -915,6 +915,7 @@ async def _execute_tool_call(
                 "ask_user_prompt": context.ask_user_prompt,
                 **(context.tool_metadata or {}),
             },
+            hook_executor=context.hook_executor,
         ),
     )
     elapsed = time.monotonic() - t0

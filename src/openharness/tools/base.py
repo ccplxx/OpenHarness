@@ -13,8 +13,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from openharness.hooks.executor import HookExecutor
 
 
 @dataclass
@@ -28,6 +32,7 @@ class ToolExecutionContext:
 
     cwd: Path
     metadata: dict[str, Any] = field(default_factory=dict)
+    hook_executor: HookExecutor | None = None
 
 
 @dataclass(frozen=True)

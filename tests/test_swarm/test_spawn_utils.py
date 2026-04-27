@@ -56,3 +56,24 @@ def test_build_inherited_cli_flags_none_model_excluded():
 def test_build_inherited_cli_flags_empty_string_model_excluded():
     flags = build_inherited_cli_flags(model="")
     assert "--model" not in flags
+
+
+def test_build_inherited_cli_flags_forwards_system_prompt_as_replace():
+    flags = build_inherited_cli_flags(system_prompt="You are a specialized worker.")
+
+    assert "--system-prompt" in flags
+    idx = flags.index("--system-prompt")
+    assert "specialized worker" in flags[idx + 1]
+    assert "--append-system-prompt" not in flags
+
+
+def test_build_inherited_cli_flags_forwards_system_prompt_as_append():
+    flags = build_inherited_cli_flags(
+        system_prompt="Extra worker instructions.",
+        system_prompt_mode="append",
+    )
+
+    assert "--append-system-prompt" in flags
+    idx = flags.index("--append-system-prompt")
+    assert "Extra worker instructions." in flags[idx + 1]
+    assert "--system-prompt" not in flags

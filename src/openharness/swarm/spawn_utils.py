@@ -109,6 +109,8 @@ def get_teammate_command() -> str:
 def build_inherited_cli_flags(
     *,
     model: str | None = None,
+    system_prompt: str | None = None,
+    system_prompt_mode: str | None = None,
     permission_mode: str | None = None,
     plan_mode_required: bool = False,
     settings_path: str | None = None,
@@ -124,19 +126,24 @@ def build_inherited_cli_flags(
     将列表拼接为 shell 命令字符串时的命令注入。
 
     Args:
-        model: 要转发的模型覆盖（如 ``"claude-opus-4-6"``）。
-        permission_mode: ``"bypassPermissions"``、``"acceptEdits"`` 或 None。
-        plan_mode_required: 为 True 时抑制 bypass-permissions 标志
-            （计划模式优先于绕过以确保安全）。
-        settings_path: 通过 ``--settings`` 传播的设置 JSON 文件路径。
-            已 shell 转义以确保安全。
-        teammate_mode: Teammate 执行模式（``"auto"``、``"in_process"``、
-            ``"tmux"``）。作为 ``--teammate-mode`` 转发，使 tmux teammate
-            使用与领导者相同的模式。
-        plugin_dirs: 插件目录路径列表。每个作为独立的
-            ``--plugin-dir <path>`` 标志转发，使内联插件在 teammate 进程中可用。
-        extra_flags: 原样追加的额外预构建标志字符串。
-            调用方负责对其中的值进行转义。
+        model: Model override to forward (e.g. ``"claude-opus-4-6"``).
+        system_prompt: System prompt override to forward to the teammate.
+        system_prompt_mode: One of ``"replace"``/``"default"`` or ``"append"``.
+            ``append`` maps to ``--append-system-prompt``; anything else uses
+            ``--system-prompt``.
+        permission_mode: One of ``"bypassPermissions"``, ``"acceptEdits"``, or None.
+        plan_mode_required: When True, bypass-permissions flag is suppressed
+            (plan mode takes precedence over bypass for safety).
+        settings_path: Path to a settings JSON file to propagate via
+            ``--settings``.  Shell-quoted for safety.
+        teammate_mode: Teammate execution mode (``"auto"``, ``"in_process"``,
+            ``"tmux"``).  Forwarded as ``--teammate-mode`` so tmux teammates
+            use the same mode as the leader.
+        plugin_dirs: List of plugin directory paths.  Each is forwarded as a
+            separate ``--plugin-dir <path>`` flag so inline plugins are
+            visible inside teammate processes.
+        extra_flags: Additional pre-built flag strings to append verbatim.
+            Callers are responsible for quoting any values in these strings.
 
     Returns:
         可传递给 :mod:`subprocess` 的 CLI 标志字符串列表。
@@ -155,6 +162,13 @@ def build_inherited_cli_flags(
     # "inherit" means use the parent's model via the OPENHARNESS_MODEL env var.
     if model and model != "inherit":
         flags.extend(["--model", shlex.quote(model)])
+
+    # --- System prompt override ------------------------------------------
+    # Agent definitions can carry a dedicated worker system prompt. Forward it
+    # explicitly so subprocess teammates preserve their role/personality.
+    if system_prompt:
+        prompt_flag = "--append-system-prompt" if system_prompt_mode == "append" else "--system-prompt"
+        flags.extend([prompt_flag, shlex.quote(system_prompt)])
 
     # --- Settings path propagation ----------------------------------------
     # Ensures teammates load the same settings JSON as the leader process.

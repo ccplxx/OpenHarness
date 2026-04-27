@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from openharness.engine.stream_events import (
     ToolExecutionStarted,
 )
 from openharness.permissions import PermissionChecker, PermissionMode
+from openharness.tasks import get_task_manager
 from openharness.tools import create_default_tool_registry
 from openharness.tools.base import BaseTool, ToolExecutionContext, ToolRegistry, ToolResult
 from openharness.tools.glob_tool import GlobTool
@@ -179,7 +181,7 @@ async def test_query_engine_plain_text_reply(tmp_path: Path, monkeypatch):
             ]
         ),
         tool_registry=create_default_tool_registry(),
-        permission_checker=PermissionChecker(PermissionSettings()),
+        permission_checker=PermissionChecker(PermissionSettings(mode=PermissionMode.FULL_AUTO)),
         cwd=tmp_path,
         model="claude-test",
         system_prompt="system",
@@ -228,7 +230,7 @@ async def test_query_engine_executes_tool_calls(tmp_path: Path, monkeypatch):
             ]
         ),
         tool_registry=create_default_tool_registry(),
-        permission_checker=PermissionChecker(PermissionSettings()),
+        permission_checker=PermissionChecker(PermissionSettings(mode=PermissionMode.FULL_AUTO)),
         cwd=tmp_path,
         model="claude-test",
         system_prompt="system",
@@ -310,7 +312,7 @@ async def test_query_engine_allows_unbounded_turns_when_max_turns_is_none(tmp_pa
             ]
         ),
         tool_registry=create_default_tool_registry(),
-        permission_checker=PermissionChecker(PermissionSettings()),
+        permission_checker=PermissionChecker(PermissionSettings(mode=PermissionMode.FULL_AUTO)),
         cwd=tmp_path,
         model="claude-test",
         system_prompt="system",
@@ -621,7 +623,7 @@ async def test_user_prompt_submit_hook_fires(tmp_path: Path, monkeypatch):
     engine = QueryEngine(
         api_client=StaticApiClient("done"),
         tool_registry=create_default_tool_registry(),
-        permission_checker=PermissionChecker(PermissionSettings()),
+        permission_checker=PermissionChecker(PermissionSettings(mode=PermissionMode.FULL_AUTO)),
         cwd=tmp_path,
         model="claude-test",
         system_prompt="system",
@@ -763,6 +765,77 @@ async def test_notification_hook_fires_on_permission_prompt(tmp_path: Path, monk
     # The permission prompt callback was invoked (confirms the hook fired on the
     # correct branch, not on the silently-denied branch).
     assert prompt_tool_calls
+
+
+@pytest.mark.asyncio
+async def test_subagent_stop_hook_fires_when_spawned_agent_finishes(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_COORDINATOR_MODE", raising=False)
+    monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
+    recorder = _RecordingHookExecutor()
+    engine = QueryEngine(
+        api_client=FakeApiClient(
+            [
+                _FakeResponse(
+                    message=ConversationMessage(
+                        role="assistant",
+                        content=[
+                            ToolUseBlock(
+                                id="toolu_agent_1",
+                                name="agent",
+                                input={
+                                    "description": "quick worker run",
+                                    "prompt": "ready",
+                                    "subagent_type": "worker",
+                                    "mode": "local_agent",
+                                    "command": 'python -u -c "import sys; print(sys.stdin.readline().strip())"',
+                                },
+                            )
+                        ],
+                    ),
+                    usage=UsageSnapshot(input_tokens=2, output_tokens=2),
+                ),
+                _FakeResponse(
+                    message=ConversationMessage(
+                        role="assistant",
+                        content=[TextBlock(text="worker done")],
+                    ),
+                    usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+                ),
+            ]
+        ),
+        tool_registry=create_default_tool_registry(),
+        permission_checker=PermissionChecker(PermissionSettings(mode=PermissionMode.FULL_AUTO)),
+        cwd=tmp_path,
+        model="claude-test",
+        system_prompt="system",
+        hook_executor=recorder,  # type: ignore[arg-type]
+    )
+
+    _ = [event async for event in engine.submit_message("run a worker")]
+
+    manager = get_task_manager()
+    deadline = asyncio.get_running_loop().time() + 2.0
+    while asyncio.get_running_loop().time() < deadline:
+        subagent_stop_calls = [c for c in recorder.calls if c[0] == HookEvent.SUBAGENT_STOP]
+        if subagent_stop_calls:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        raise AssertionError("subagent_stop hook did not fire")
+
+    subagent_stop_calls = [c for c in recorder.calls if c[0] == HookEvent.SUBAGENT_STOP]
+    assert len(subagent_stop_calls) == 1
+    payload = subagent_stop_calls[0][1]
+    assert payload["event"] == "subagent_stop"
+    assert payload["agent_id"] == "worker@default"
+    assert payload["subagent_type"] == "worker"
+    assert payload["mode"] == "local_agent"
+    assert payload["status"] == "completed"
+    assert payload["return_code"] == 0
+
+    task = manager.get_task(payload["task_id"])
+    assert task is not None
+    assert task.status == "completed"
 
 
 def _tool_context(tmp_path: Path, registry: ToolRegistry, settings: PermissionSettings) -> QueryContext:
