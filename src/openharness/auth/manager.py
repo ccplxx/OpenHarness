@@ -20,6 +20,7 @@ import logging
 from typing import Any
 
 from openharness.config.settings import (
+    Settings,
     ProviderProfile,
     auth_source_provider_name,
     auth_source_uses_api_key,
@@ -100,7 +101,7 @@ class AuthManager:
         Args:
             settings: 可选的配置对象，若为 ``None`` 则在首次访问时延迟加载。
         """
-        self._settings = settings
+        self._settings: Settings = settings
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -119,7 +120,6 @@ class AuthManager:
         """
         if self._settings is None:
             from openharness.config import load_settings
-
             self._settings = load_settings()
         return self._settings
 
@@ -226,6 +226,7 @@ class AuthManager:
                 configured = True
                 origin = "file"
                 state = "configured"
+
             result[source] = {
                 "configured": configured,
                 "source": origin,

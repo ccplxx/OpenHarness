@@ -439,7 +439,7 @@ def _last_user_text(messages: list[ConversationMessage]) -> str:
 
 
 def _truncate(text: str, limit: int) -> str:
-    """截断文本到指定长度，超出时添加省略号。""" str:
+    """截断文本到指定长度，超出时添加省略号。"""
     if len(text) <= limit:
         return text
     return text[:limit] + "…"

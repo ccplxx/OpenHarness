@@ -1260,7 +1260,6 @@ def load_settings(config_path: Path | None = None) -> Settings:
     """
     if config_path is None:
         from openharness.config.paths import get_config_file_path
-
         config_path = get_config_file_path()
 
     if config_path.exists():

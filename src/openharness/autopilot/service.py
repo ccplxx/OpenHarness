@@ -58,8 +58,10 @@ _SOURCE_BASE_SCORES: dict[RepoTaskSource, int] = {
 ohmo_request 优先级最高（100），claude_code_candidate 最低（45），
 用于任务卡片的优先级排序。
 """
+
 _BUG_HINTS = ("bug", "fix", "failure", "broken", "regression", "crash", "error", "issue")
 """文本中暗示 bug 相关的关键词元组，用于评分时识别 bug 类任务。"""
+
 _URGENT_HINTS = ("urgent", "p0", "p1", "high", "critical", "blocker")
 """文本中暗示紧急程度的关键词元组，用于评分时提升优先级。"""
 
@@ -102,6 +104,8 @@ _DEFAULT_AUTOPILOT_POLICY = {
 }
 """默认的自动驾驶策略配置，涵盖 intake（入队）、decision（决策）、
 execution（执行）、github（GitHub 集成）和 repair（修复重试）五大策略区块。"""
+
+
 _DEFAULT_VERIFICATION_POLICY = {
     "gates": [
         "fast_gate",
@@ -123,6 +127,7 @@ _DEFAULT_VERIFICATION_POLICY = {
     "require_tests_before_merge": True,
 }
 """默认的验证策略配置，定义验证门控名称、验证命令列表以及合并前是否必须通过测试。"""
+
 _DEFAULT_RELEASE_POLICY = {
     "merge_requires_human": True,
     "release_requires_human": True,

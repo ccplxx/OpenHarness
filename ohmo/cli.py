@@ -61,7 +61,7 @@ def _can_use_questionary() -> bool:
     if sys.stdin is not sys.__stdin__ or sys.stdout is not sys.__stdout__:
         return False
     try:
-        import questionary  # noqa: F401
+        import questionary  # noqa: F401 Questionary 是一个用于构建漂亮命令行交互式提示的 Python 库
     except ImportError:
         return False
     return True
