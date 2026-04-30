@@ -50,19 +50,19 @@ from openharness.tools import ToolRegistry, create_default_tool_registry
 from openharness.keybindings import load_keybindings
 
 PermissionPrompt = Callable[[str, str], Awaitable[bool]]
-"""权限确认回调类型：接收工具名称和拒绝原因，返回是否允许执行。"""
+"""异步 权限确认回调类型：接收工具名称和拒绝原因，返回是否允许执行。"""
 
 AskUserPrompt = Callable[[str], Awaitable[str]]
-"""用户输入回调类型：接收问题文本，返回用户回答。"""
+"""异步 用户输入回调类型：接收问题文本，返回用户回答。"""
 
 SystemPrinter = Callable[[str], Awaitable[None]]
-"""系统消息打印回调类型。"""
+"""异步 系统消息打印回调类型。"""
 
 StreamRenderer = Callable[[StreamEvent], Awaitable[None]]
-"""流式事件渲染回调类型。"""
+"""异步 流式事件渲染回调类型。"""
 
 ClearHandler = Callable[[], Awaitable[None]]
-"""输出清除回调类型。"""
+"""异步 输出清除回调类型。"""
 
 
 @dataclass
@@ -235,6 +235,8 @@ async def build_runtime(
     6. 恢复对话历史（如有）
     7. 启动 Docker 沙箱（如配置）
     """
+
+    # setting配置覆盖
     settings_overrides: dict[str, Any] = {
         "model": model,
         "max_turns": max_turns,
@@ -247,15 +249,22 @@ async def build_runtime(
     }
     settings = load_settings().merge_cli_overrides(**settings_overrides)
     cwd = str(Path(cwd).expanduser().resolve()) if cwd else str(Path.cwd())
+
+    # 外部skill、plugin 加载
     normalized_skill_dirs = tuple(str(Path(path).expanduser().resolve()) for path in (extra_skill_dirs or ()))
     normalized_plugin_roots = tuple(str(Path(path).expanduser().resolve()) for path in (extra_plugin_roots or ()))
     plugins = load_plugins(settings, cwd, extra_roots=normalized_plugin_roots)
+    
+    # api_client 获取
     if api_client:
         resolved_api_client = api_client
     else:
         resolved_api_client = _resolve_api_client_from_settings(settings)
+
+    # mcp manager
     mcp_manager = McpClientManager(load_mcp_server_configs(settings, plugins))
     await mcp_manager.connect_all()
+    
     tool_registry = create_default_tool_registry(mcp_manager)
     # Register plugin-provided tools
     for plugin in plugins:
@@ -264,6 +273,8 @@ async def build_runtime(
                 tool_registry.register(tool)
     provider = detect_provider(settings)
     bridge_manager = get_bridge_manager()
+    
+    # 创建app state
     app_state = AppStateStore(
         AppState(
             # Show the effective runtime model (after CLI/env/profile merges),
@@ -289,6 +300,8 @@ async def build_runtime(
             keybindings=load_keybindings(),
         )
     )
+
+    # hook
     hook_reloader = HookReloader(get_config_file_path())
     hook_executor = HookExecutor(
         hook_reloader.current_registry() if api_client is None else load_hook_registry(settings, plugins),
@@ -299,6 +312,8 @@ async def build_runtime(
         ),
     )
     engine_max_turns = settings.max_turns if (enforce_max_turns or max_turns is not None) else None
+
+    # 构建运行时system prompt
     system_prompt_text = build_runtime_system_prompt(
         settings,
         cwd=cwd,
@@ -331,6 +346,7 @@ async def build_runtime(
         for key, value in restore_tool_metadata.items():
             restored_metadata[key] = value
 
+    # 初始化 engine
     engine = QueryEngine(
         api_client=resolved_api_client,
         tool_registry=tool_registry,
@@ -357,6 +373,7 @@ async def build_runtime(
             **restored_metadata,
         },
     )
+
     # Restore messages from a saved session if provided
     if restore_messages:
         restored = sanitize_conversation_messages(
@@ -569,7 +586,7 @@ async def handle_line(
             load_hook_registry(bundle.current_settings(), bundle.current_plugins())
         )
 
-    parsed = bundle.commands.lookup(line)
+    parsed = bundle.commands.lookup(line)  # 匹配commands, 如果有匹配，执行command
     if parsed is not None:
         command, args = parsed
         result = await command.handler(
@@ -661,6 +678,8 @@ async def handle_line(
     settings = bundle.current_settings()
     if bundle.enforce_max_turns:
         bundle.engine.set_max_turns(settings.max_turns)
+    
+    # 为engine设置system_prompt
     system_prompt = build_runtime_system_prompt(
         settings,
         cwd=bundle.cwd,
@@ -669,6 +688,8 @@ async def handle_line(
         extra_plugin_roots=bundle.extra_plugin_roots,
     )
     bundle.engine.set_system_prompt(system_prompt)
+    
+    # 运行用户的提交
     try:
         async for event in bundle.engine.submit_message(line):
             await render_event(event)
@@ -677,6 +698,7 @@ async def handle_line(
         pending = _format_pending_tool_results(bundle.engine.messages)
         if pending:
             await print_system(pending)
+
         bundle.session_backend.save_snapshot(
             cwd=bundle.cwd,
             model=settings.model,
@@ -688,6 +710,7 @@ async def handle_line(
         )
         sync_app_state(bundle)
         return True
+    
     bundle.session_backend.save_snapshot(
         cwd=bundle.cwd,
         model=settings.model,

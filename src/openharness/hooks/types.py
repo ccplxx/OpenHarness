@@ -20,7 +20,9 @@ class HookResult:
 
 @dataclass(frozen=True)
 class AggregatedHookResult:
-    """Aggregated result for a hook event."""
+    """Aggregated result for a hook event.
+        由于一个hook事件要执行多个hook动作，这个类归集所有动作的结果，并做最终验证
+    """
 
     results: list[HookResult] = field(default_factory=list)
 

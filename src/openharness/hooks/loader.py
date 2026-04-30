@@ -8,14 +8,17 @@ from openharness.hooks.schemas import HookDefinition
 
 
 class HookRegistry:
-    """Store hooks grouped by event."""
+    """Store hooks grouped by event. Hook注册器
+    为不同hook事件, 注册事件处理HookDefinition
+    """
 
     def __init__(self) -> None:
         self._hooks: dict[HookEvent, list[HookDefinition]] = defaultdict(list)  # 不同类型的hook 被存储在_hooks中
 
     def register(self, event: HookEvent, hook: HookDefinition) -> None:
         """Register one hook."""
-        self._hooks[event].append(hook)
+        if hook not in self._hooks[event]:
+            self._hooks[event].append(hook)
 
     def get(self, event: HookEvent) -> list[HookDefinition]:
         """Return hooks registered for an event."""
@@ -40,6 +43,7 @@ class HookRegistry:
 def load_hook_registry(settings, plugins=None) -> HookRegistry:
     """Load hooks from the current settings object."""
     registry = HookRegistry()
+    
     for raw_event, hooks in settings.hooks.items():
         try:
             event = HookEvent(raw_event)
@@ -47,6 +51,7 @@ def load_hook_registry(settings, plugins=None) -> HookRegistry:
             continue
         for hook in hooks:
             registry.register(event, hook)
+    
     for plugin in plugins or []:
         if not plugin.enabled:
             continue

@@ -190,6 +190,7 @@ class QueryEngine:
         if user_message.text.strip():
             remember_user_goal(self._tool_metadata, user_message.text)
         self._messages.append(user_message)
+
         if self._hook_executor is not None:
             await self._hook_executor.execute(
                 HookEvent.USER_PROMPT_SUBMIT,
@@ -198,6 +199,7 @@ class QueryEngine:
                     "prompt": user_message.text,
                 },
             )
+            
         context = QueryContext(
             api_client=self._api_client,
             tool_registry=self._tool_registry,

@@ -6,7 +6,9 @@ from enum import Enum
 
 
 class HookEvent(str, Enum):
-    """Events that can trigger hooks."""
+    """Events that can trigger hooks.
+    触发Hook的事件定义, 通过配置和插件定义不同事件是要执行的动作
+    """
 
     SESSION_START = "session_start"
     SESSION_END = "session_end"

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-
+# AppState 使用 @dataclass 定义，AppStateStore.set() 使用 dataclasses.replace() 创建新实例
+# 确保每次状态更新都产生新对象，避免直接修改现有状态导致的副作用
+# 监听器接收的是更新后的完整状态快照，而非增量变更
 @dataclass
 class AppState:
     """Shared mutable UI/session state."""

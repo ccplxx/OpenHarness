@@ -66,6 +66,7 @@ class HookExecutor:
     async def execute(self, event: HookEvent, payload: dict[str, Any]) -> AggregatedHookResult:
         """Execute all matching hooks for an event."""
         results: list[HookResult] = []
+        # 一个event里有多个hook
         for hook in self._registry.get(event):
             if not _matches_hook(hook, payload):
                 continue

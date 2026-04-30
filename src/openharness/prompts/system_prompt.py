@@ -1,6 +1,8 @@
 """System prompt builder for OpenHarness.
 
 Assembles the system prompt from environment info and user configuration.
+
+系统prompt = _BASE_SYSTEM_PROMPT/自定义 system prompt + env info
 """
 
 from __future__ import annotations

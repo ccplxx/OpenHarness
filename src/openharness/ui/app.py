@@ -31,7 +31,13 @@ from openharness.api.client import SupportsStreamingMessages
 from openharness.engine.stream_events import StreamEvent
 from openharness.ui.backend_host import run_backend_host
 from openharness.ui.react_launcher import launch_react_tui
-from openharness.ui.runtime import build_runtime, close_runtime, handle_line, start_runtime
+from openharness.ui.runtime import (
+    RuntimeBundle,
+    build_runtime, 
+    close_runtime, 
+    handle_line, 
+    start_runtime, 
+)
 
 
 _TERMINAL_TASK_STATUSES = frozenset({"completed", "failed", "killed"})
@@ -166,7 +172,7 @@ def _format_completed_task_notifications(completed: list[dict[str, object]]) -> 
 
 
 async def _submit_print_follow_up(
-    bundle,
+    bundle: RuntimeBundle,
     message: str,
     *,
     prompt_seed: str,
@@ -211,7 +217,7 @@ async def _submit_print_follow_up(
 
 
 async def _drain_coordinator_async_agents(
-    bundle,
+    bundle: RuntimeBundle,
     *,
     prompt_seed: str,
     output_format: str,
@@ -432,10 +438,10 @@ async def run_print_mode(
         api_format=api_format,
         enforce_max_turns=True,
         api_client=api_client,
-        permission_prompt=_noop_permission,
-        ask_user_prompt=_noop_ask,
+        permission_prompt=_noop_permission, # 权限确认回调类型
+        ask_user_prompt=_noop_ask,  # 用户输入回调类型
     )
-    await start_runtime(bundle)
+    await start_runtime(bundle)  # 执行session_start hook，这里没有收集hook的结果？
 
     collected_text = ""
     events_list: list[dict] = []
@@ -456,7 +462,7 @@ async def run_print_mode(
                 collected_text += event.text
                 if output_format == "text":
                     sys.stdout.write(event.text)
-                    sys.stdout.flush()
+                    sys.stdout.flush()  # 强制将输出缓冲区中的内容立即写入终端（或文件）而不是等待缓冲区满了或程序结束才输出。
                 elif output_format == "stream-json":
                     obj = {"type": "assistant_delta", "text": event.text}
                     print(json.dumps(obj), flush=True)

@@ -13,18 +13,19 @@ class HookReloader:
 
     def __init__(self, settings_path: Path) -> None:
         self._settings_path = settings_path
-        self._last_mtime_ns = -1
+        self._last_mtime_ns = -1  # 上一次修改时间
         self._registry = HookRegistry()
 
     def current_registry(self) -> HookRegistry:
         """Return the latest registry, reloading if needed."""
         try:
-            stat = self._settings_path.stat()
+            stat = self._settings_path.stat()  # 获取文件的状态信息
         except FileNotFoundError:
             self._registry = HookRegistry()
             self._last_mtime_ns = -1
             return self._registry
 
+        # 配置文件被修改过
         if stat.st_mtime_ns != self._last_mtime_ns:
             self._last_mtime_ns = stat.st_mtime_ns
             self._registry = load_hook_registry(load_settings(self._settings_path))

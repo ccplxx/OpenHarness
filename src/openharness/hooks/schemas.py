@@ -1,4 +1,6 @@
-"""Hook configuration schemas."""
+"""Hook configuration schemas.
+钩子动作定义
+"""
 
 from __future__ import annotations
 

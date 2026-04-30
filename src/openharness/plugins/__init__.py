@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # pragma: no cover
     from openharness.plugins.schemas import PluginManifest
     from openharness.plugins.types import LoadedPlugin
+    from openharness.plugins.loader import load_plugins
 
 __all__ = [
     "LoadedPlugin",
