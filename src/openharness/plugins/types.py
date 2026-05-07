@@ -43,6 +43,8 @@ class LoadedPlugin:
     manifest: PluginManifest
     path: Path
     enabled: bool
+    
+    # 插件可贡献6类资源
     skills: list[SkillDefinition] = field(default_factory=list)
     commands: list[PluginCommandDefinition] = field(default_factory=list)
     agents: list[AgentDefinition] = field(default_factory=list)

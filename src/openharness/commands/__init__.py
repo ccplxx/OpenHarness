@@ -1,6 +1,6 @@
 """Command registry exports."""
 
-from openharness.commands.registry import (
+from src.openharness.commands.builder import (
     CommandContext,
     CommandRegistry,
     CommandResult,
@@ -15,3 +15,6 @@ __all__ = [
     "SlashCommand",
     "create_default_command_registry",
 ]
+
+
+

@@ -40,13 +40,11 @@ from openharness.engine.stream_events import (
     ToolExecutionCompleted,
     ToolExecutionStarted,
 )
-from openharness.output_styles import load_output_styles
 from openharness.tasks import get_task_manager
+from openharness.output_styles import load_output_styles
 from openharness.ui.protocol import BackendEvent, FrontendRequest, TranscriptItem
 from openharness.ui.runtime import build_runtime, close_runtime, handle_line, start_runtime
 from openharness.services.session_backend import SessionBackend
-
-log = logging.getLogger(__name__)
 
 log = logging.getLogger(__name__)
 
@@ -95,7 +93,7 @@ class ReactBackendHost:
         self._config = config
         self._bundle = None
         self._write_lock = asyncio.Lock()
-        self._request_queue: asyncio.Queue[FrontendRequest] = asyncio.Queue()
+        self._request_queue: asyncio.Queue[FrontendRequest] = asyncio.Queue()  # stdin输入
         self._permission_requests: dict[str, asyncio.Future[bool]] = {}
         self._question_requests: dict[str, asyncio.Future[str]] = {}
         self._permission_lock = asyncio.Lock()
@@ -111,6 +109,7 @@ class ReactBackendHost:
         然后循环读取前端请求并分发处理，直到收到 shutdown 请求
         或处理函数返回应退出信号。返回退出码 0。
         """
+        # 构建运行时
         self._bundle = await build_runtime(
             model=self._config.model,
             max_turns=self._config.max_turns,
@@ -132,6 +131,8 @@ class ReactBackendHost:
             extra_plugin_roots=self._config.extra_plugin_roots,
         )
         await start_runtime(self._bundle)
+
+        # Python 后端发送给 React 前端的ready事件
         await self._emit(
             BackendEvent.ready(
                 self._bundle.app_state.get(),
@@ -141,6 +142,8 @@ class ReactBackendHost:
         )
         await self._emit(self._status_snapshot())
 
+        # 创建了一个独立的异步任务来持续读取前端发送的请求
+        # 用于将协程包装为 Task 对象并立即调度执行（不等待完成）
         reader = asyncio.create_task(self._read_requests())
         try:
             while self._running:
@@ -178,14 +181,17 @@ class ReactBackendHost:
                 if self._busy:
                     await self._emit(BackendEvent(type="error", message="Session is busy"))
                     continue
+                
                 line = (request.line or "").strip()
                 if not line:
                     continue
+                
                 self._busy = True
                 try:
                     should_continue = await self._process_line(line)
                 finally:
                     self._busy = False
+                
                 if not should_continue:
                     await self._emit(BackendEvent(type="shutdown"))
                     break
@@ -203,20 +209,24 @@ class ReactBackendHost:
         解析 JSON 行为 FrontendRequest，直接处理权限/问题响应
         （通过 Future 机制），其他请求入队供主循环处理。
         stdin EOF 时发送 shutdown 请求。
+        用户输入--> 前端解析为json --> 直接解析或添加道列表
         """
         while True:
             raw = await asyncio.to_thread(sys.stdin.buffer.readline)
-            if not raw:
+            if not raw:  # 表示读取到 EOF（前端进程已退出）
                 await self._request_queue.put(FrontendRequest(type="shutdown"))
                 return
             payload = raw.decode("utf-8").strip()
             if not payload:
                 continue
+            
+            # 反序列化为FrontendRequest对象
             try:
                 request = FrontendRequest.model_validate_json(payload)
             except Exception as exc:  # pragma: no cover - defensive protocol handling
                 await self._emit(BackendEvent(type="error", message=f"Invalid request: {exc}"))
                 continue
+
             if request.type == "permission_response" and request.request_id in self._permission_requests:
                 future = self._permission_requests[request.request_id]
                 if not future.done():
@@ -227,6 +237,8 @@ class ReactBackendHost:
                 if not future.done():
                     future.set_result(request.answer or "")
                 continue
+
+            # 添加到队列
             await self._request_queue.put(request)
 
     async def _process_line(self, line: str, *, transcript_line: str | None = None) -> bool:

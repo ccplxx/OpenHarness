@@ -32,9 +32,15 @@ from openharness.skills.types import SkillDefinition
 
 logger = logging.getLogger(__name__)
 
+# **三级目录**：
+# 1. **用户级插件**：`~/.config/openharness/plugins/` - 全局可用
+# 2. **项目级插件**：`./.openharness/plugins/` - 项目特定（需显式启用）
+# 3. **额外根目录**：通过 `extra_roots` 参数指定
 
 def get_user_plugins_dir() -> Path:
-    """Return the user plugin directory."""
+    """Return the user plugin directory.
+        插件发现，
+    """
     path = get_config_dir() / "plugins"
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -83,7 +89,9 @@ def discover_plugin_paths_for_settings(
     cwd: str | Path,
     extra_roots: Iterable[str | Path] | None = None,
 ) -> list[Path]:
-    """Find plugin directories that are permitted by the active settings."""
+    """Find plugin directories that are permitted by the active settings.
+        完整的发现机制
+    """
     roots = [get_user_plugins_dir()]
     if getattr(settings, "allow_project_plugins", False):
         roots.append(get_project_plugins_dir(cwd))
@@ -105,7 +113,9 @@ def discover_plugin_paths_for_settings(
 
 
 def load_plugins(settings, cwd: str | Path, extra_roots: Iterable[str | Path] | None = None) -> list[LoadedPlugin]:
-    """Load plugins from disk."""
+    """Load plugins from disk.
+        加载多个插件
+    """
     project_plugins_dir = get_project_plugins_dir(cwd)
     if not getattr(settings, "allow_project_plugins", False) and any(
         path.is_dir() and _find_manifest(path) is not None for path in sorted(project_plugins_dir.iterdir())
@@ -124,17 +134,24 @@ def load_plugins(settings, cwd: str | Path, extra_roots: Iterable[str | Path] | 
 
 
 def load_plugin(path: Path, enabled_plugins: dict[str, bool]) -> LoadedPlugin | None:
-    """Load one plugin directory."""
+    """Load one plugin directory.
+        加载一个插件
+    """
     manifest_path = _find_manifest(path)
     if manifest_path is None:
         return None
+    
     try:
+        # 读取插件清单
         manifest = PluginManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
     except Exception as exc:
         logger.debug("Failed to load plugin manifest from %s: %s", manifest_path, exc)
         return None
+
+    # 是否激活插件
     enabled = enabled_plugins.get(manifest.name, manifest.enabled_by_default)
 
+    # 加载6中插件资源
     skills = _load_plugin_skills(path / manifest.skills_dir)
     commands = _load_plugin_commands(path, manifest)
     agents = _load_plugin_agents(path, manifest)
@@ -253,6 +270,8 @@ def _load_plugin_skills(path: Path) -> list[SkillDefinition]:
     if not path.exists():
         return []
     skills: list[SkillDefinition] = []
+
+    # 1. 目录下直接加载SKILLL.md
     direct_skill = path / "SKILL.md"
     if direct_skill.exists():
         content = direct_skill.read_text(encoding="utf-8")
@@ -267,6 +286,8 @@ def _load_plugin_skills(path: Path) -> list[SkillDefinition]:
             )
         )
         return skills
+
+    # 2. 遍历目录下文件夹加载SKILL.md
     for child in sorted(path.iterdir()):
         if not child.is_dir():
             continue
@@ -298,6 +319,7 @@ def _coerce_path_list(raw: Any) -> list[str]:
 
 
 def _load_plugin_commands(path: Path, manifest: PluginManifest) -> list[PluginCommandDefinition]:
+    """加载插件commands"""
     commands: list[PluginCommandDefinition] = []
     seen: set[Path] = set()
     default_commands_dir = path / "commands"

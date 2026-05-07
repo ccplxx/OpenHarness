@@ -48,6 +48,8 @@ from openharness.state import AppState, AppStateStore
 from openharness.services.session_backend import DEFAULT_SESSION_BACKEND, SessionBackend
 from openharness.tools import ToolRegistry, create_default_tool_registry
 from openharness.keybindings import load_keybindings
+from openharness.commands import CommandRegistry
+
 
 PermissionPrompt = Callable[[str, str], Awaitable[bool]]
 """异步 权限确认回调类型：接收工具名称和拒绝原因，返回是否允许执行。"""
@@ -81,7 +83,7 @@ class RuntimeBundle:
     app_state: AppStateStore
     hook_executor: HookExecutor
     engine: QueryEngine
-    commands: object
+    commands: CommandRegistry
     external_api_client: bool
     enforce_max_turns: bool = True
     session_id: str = ""
@@ -586,7 +588,8 @@ async def handle_line(
             load_hook_registry(bundle.current_settings(), bundle.current_plugins())
         )
 
-    parsed = bundle.commands.lookup(line)  # 匹配commands, 如果有匹配，执行command
+    # 匹配commands, 如果有匹配，执行command
+    parsed = bundle.commands.lookup(line)  
     if parsed is not None:
         command, args = parsed
         result = await command.handler(
@@ -608,6 +611,8 @@ async def handle_line(
         if result.refresh_runtime:
             refresh_runtime_client(bundle)
         await _render_command_result(result, print_system, clear_output, render_event)
+        
+        # 更新model
         if result.submit_prompt is not None:
             original_model = bundle.engine.model
             if result.submit_model:
@@ -675,6 +680,7 @@ async def handle_line(
         sync_app_state(bundle)
         return not result.should_exit
 
+    # 基于line输入执行
     settings = bundle.current_settings()
     if bundle.enforce_max_turns:
         bundle.engine.set_max_turns(settings.max_turns)

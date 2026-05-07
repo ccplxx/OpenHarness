@@ -6,7 +6,9 @@ from pydantic import BaseModel
 
 
 class PluginManifest(BaseModel):
-    """Plugin manifest stored in plugin.json or .claude-plugin/plugin.json."""
+    """Plugin manifest stored in plugin.json or .claude-plugin/plugin.json.
+        插件清单，从plugin.json中读取
+    """
 
     name: str
     version: str = "0.0.0"
@@ -16,6 +18,7 @@ class PluginManifest(BaseModel):
     tools_dir: str = "tools"
     hooks_file: str = "hooks.json"
     mcp_file: str = "mcp.json"
+    
     # Extended fields: optional author, commands, agents, etc.
     author: dict | None = None
     commands: str | list | dict | None = None

@@ -1,4 +1,12 @@
-"""CLI entry point using typer."""
+"""CLI entry point using typer.
+_recommend_preview_candidates()  # 主推荐函数
+    ↓
+_score_candidate_match()        # 计算匹配分数
+    ↓
+_tokenize_preview_text()        # 标记化用户提示
+    ↓
+_tokenize_preview_text()        # 标记化候选对象描述
+"""
 
 from __future__ import annotations
 
@@ -190,6 +198,11 @@ def _dry_run_command_behavior(name: str) -> dict[str, str]:
 
 
 def _tokenize_preview_text(text: str) -> list[str]:
+    """
+    当用户输入"how to read a JSON file"时，该函数会提取["read", "json", "file"]，
+    从而匹配到read_file工具、json相关技能和/files命令，实现语义驱动的智能推荐。
+    体现了 OpenHarness 在用户意图理解和上下文感知方面的精细设计，是干运行预览功能能够提供有价值建议的关键组件。
+    """
     lowered = text.lower()
     ascii_tokens = re.findall(r"[a-z0-9_/-]+", lowered)
     cjk_tokens = [char for char in lowered if "\u4e00" <= char <= "\u9fff"]
@@ -247,6 +260,7 @@ def _recommend_preview_candidates(
 ) -> dict[str, list[dict[str, object]]]:
     if not prompt:
         return {"skills": [], "tools": [], "commands": []}
+    
     stripped = prompt.strip()
     if not stripped or stripped.startswith("/"):
         return {"skills": [], "tools": [], "commands": []}
@@ -404,7 +418,10 @@ def build_dry_run_preview(
     from openharness.tools import create_default_tool_registry
     from openharness.ui.runtime import _resolve_api_client_from_settings
 
+    # 解析工作路径
     resolved_cwd = str(Path(cwd).expanduser().resolve())
+    
+    # 加载并更新配置
     settings = load_settings().merge_cli_overrides(
         model=model,
         max_turns=max_turns,
@@ -414,10 +431,13 @@ def build_dry_run_preview(
         api_format=api_format,
         permission_mode=permission_mode,
     )
+
+    # auth信息
     provider = detect_provider(settings)
     auth = auth_status(settings)
     profile_name, profile = settings.resolve_profile()
 
+    # 加载插件
     plugins = load_plugins(settings, resolved_cwd)
     plugin_commands = [
         command
@@ -425,10 +445,15 @@ def build_dry_run_preview(
         if plugin.enabled
         for command in plugin.commands
     ]
+    
+    # 加载command并于输入匹配
     command_registry = create_default_command_registry(plugin_commands=plugin_commands)
     command_match = command_registry.lookup(prompt) if prompt else None
+
+    # 加载skill
     skill_registry = load_skill_registry(resolved_cwd, settings=settings)
     skills = skill_registry.list_skills()
+    
     mcp_servers = load_mcp_server_configs(settings, plugins)
     tool_registry = create_default_tool_registry()
     tool_schemas = []
@@ -633,7 +658,7 @@ def format_dry_run_preview(preview: dict[str, object]) -> str:
         f"- auth: {validation.get('auth_status')}",
         f"- api client: {validation.get('api_client', {}).get('status', 'unknown')}",
         f"- system prompt chars: {validation.get('system_prompt_chars')}",
-        f"- mcp: {validation.get('mcp_validation')}",
+        f"- mcp: {validation.get('mcp_validation')}", 
         f"- mcp config errors: {validation.get('mcp_errors', 0)}",
         "",
         "Discovery",
