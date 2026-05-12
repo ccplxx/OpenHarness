@@ -18,26 +18,23 @@ import asyncio
 import json
 import sys
 
-from openharness.coordinator.coordinator_mode import (
-    TaskNotification,
-    format_task_notification,
-    is_coordinator_mode,
-)
-from openharness.engine.query import MaxTurnsExceeded
-from openharness.prompts.context import build_runtime_system_prompt
-from openharness.tasks.manager import get_task_manager
+from openharness.coordinator.coordinator_mode import is_coordinator_mode
 
 from openharness.api.client import SupportsStreamingMessages
 from openharness.engine.stream_events import StreamEvent
 from openharness.ui.backend_host import run_backend_host
+from openharness.ui.coordinator_drain import drain_coordinator_async_agents
 from openharness.ui.react_launcher import launch_react_tui
 from openharness.ui.runtime import build_runtime, close_runtime, handle_line, start_runtime
 
 
+<<<<<<< HEAD
 _TERMINAL_TASK_STATUSES = frozenset({"completed", "failed", "killed"})
 """异步代理任务的终态状态集合，到达这些状态表示任务已结束。"""
 
 
+=======
+>>>>>>> upstream/main
 def _decode_task_worker_line(raw: str) -> str:
     """为无头任务 worker 规范化一行 stdin 输入。
 
@@ -59,6 +56,7 @@ def _decode_task_worker_line(raw: str) -> str:
     return stripped
 
 
+<<<<<<< HEAD
 def _async_agent_task_entries(tool_metadata: dict[str, object] | None) -> list[dict[str, object]]:
     """从工具元数据中提取异步代理任务条目列表。"""
     if not isinstance(tool_metadata, dict):
@@ -247,6 +245,8 @@ async def _drain_coordinator_async_agents(
         )
 
 
+=======
+>>>>>>> upstream/main
 async def run_repl(
     *,
     prompt: str | None = None,
@@ -518,12 +518,12 @@ async def run_print_mode(
             clear_output=_clear_output,
         )
         if is_coordinator_mode():
-            await _drain_coordinator_async_agents(
+            await drain_coordinator_async_agents(
                 bundle,
                 prompt_seed=prompt,
-                output_format=output_format,
                 print_system=_print_system,
                 render_event=_render_event,
+                announce_waiting=output_format == "text",
             )
 
         if output_format == "json":

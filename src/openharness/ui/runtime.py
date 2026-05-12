@@ -26,7 +26,13 @@ from openharness.api.copilot_client import CopilotClient
 from openharness.api.openai_client import OpenAICompatibleClient
 from openharness.api.provider import auth_status, detect_provider
 from openharness.bridge import get_bridge_manager
-from openharness.commands import CommandContext, CommandResult, create_default_command_registry
+from openharness.commands import (
+    CommandContext,
+    CommandResult,
+    MemoryCommandBackend,
+    create_default_command_registry,
+    lookup_skill_slash_command,
+)
 from openharness.config import get_config_file_path, load_settings
 from openharness.engine import QueryEngine
 from openharness.engine.messages import (
@@ -65,6 +71,72 @@ ClearHandler = Callable[[], Awaitable[None]]
 """输出清除回调类型。"""
 
 
+def _resolve_image_generation_config(settings) -> dict[str, str]:
+    """Resolve image generation configuration from settings, environment, and Codex auth."""
+    from openharness.config.settings import ImageGenerationConfig, ProviderProfile
+
+    cfg = settings.image_generation
+    env_cfg = ImageGenerationConfig.from_env()
+    resolved = {
+        "provider": cfg.provider or env_cfg.provider,
+        "model": cfg.model or env_cfg.model,
+        "api_key": cfg.api_key or env_cfg.api_key,
+        "base_url": cfg.base_url or env_cfg.base_url,
+        "codex_model": cfg.codex_model or env_cfg.codex_model,
+        "codex_base_url": cfg.codex_base_url or env_cfg.codex_base_url,
+    }
+
+    try:
+        codex_profile = settings.merged_profiles().get("codex") or ProviderProfile(
+            label="Codex Subscription",
+            provider="openai_codex",
+            api_format="openai",
+            auth_source="codex_subscription",
+            default_model="gpt-5.4",
+        )
+        codex_settings = settings.model_copy(
+            update={
+                "active_profile": "codex",
+                "profiles": {**settings.profiles, "codex": codex_profile},
+            }
+        ).materialize_active_profile()
+        codex_auth = codex_settings.resolve_auth()
+        resolved["codex_auth_token"] = codex_auth.value
+        resolved["codex_base_url"] = resolved["codex_base_url"] or (codex_settings.base_url or "")
+        resolved["codex_model"] = resolved["codex_model"] or codex_settings.model
+    except Exception:
+        pass
+
+    return resolved
+
+
+def _resolve_vision_config(settings) -> dict[str, str]:
+    """Resolve the vision model configuration from settings or environment.
+
+    Priority: settings.vision fields > environment variables > empty.
+    """
+    from openharness.config.settings import VisionModelConfig
+
+    cfg = settings.vision
+    if cfg.is_configured:
+        return {
+            "model": cfg.model,
+            "api_key": cfg.api_key,
+            "base_url": cfg.base_url,
+        }
+
+    # Fall back to environment variables
+    env_cfg = VisionModelConfig.from_env()
+    if env_cfg.is_configured:
+        return {
+            "model": env_cfg.model,
+            "api_key": env_cfg.api_key,
+            "base_url": env_cfg.base_url,
+        }
+
+    return {}
+
+
 @dataclass
 class RuntimeBundle:
     """单次交互会话的共享运行时对象包。
@@ -89,6 +161,9 @@ class RuntimeBundle:
     session_backend: SessionBackend = DEFAULT_SESSION_BACKEND
     extra_skill_dirs: tuple[str, ...] = ()
     extra_plugin_roots: tuple[str, ...] = ()
+    memory_backend: MemoryCommandBackend | None = None
+    include_project_memory: bool = True
+    autodream_context: dict[str, object] | None = None
 
     def current_settings(self):
         """返回当前会话的有效设置。
@@ -223,6 +298,9 @@ async def build_runtime(
     permission_mode: str | None = None,
     extra_skill_dirs: Iterable[str | Path] | None = None,
     extra_plugin_roots: Iterable[str | Path] | None = None,
+    memory_backend: MemoryCommandBackend | None = None,
+    include_project_memory: bool = True,
+    autodream_context: dict[str, object] | None = None,
 ) -> RuntimeBundle:
     """构建 OpenHarness 会话的共享运行时。
 
@@ -305,6 +383,7 @@ async def build_runtime(
         latest_user_prompt=prompt,
         extra_skill_dirs=normalized_skill_dirs,
         extra_plugin_roots=normalized_plugin_roots,
+        include_project_memory=include_project_memory,
     )
     from uuid import uuid4
 
@@ -348,15 +427,20 @@ async def build_runtime(
         permission_prompt=permission_prompt,
         ask_user_prompt=ask_user_prompt,
         hook_executor=hook_executor,
+        settings=settings,
         tool_metadata={
             "mcp_manager": mcp_manager,
             "bridge_manager": bridge_manager,
             "extra_skill_dirs": normalized_skill_dirs,
             "extra_plugin_roots": normalized_plugin_roots,
             "session_id": session_id,
+            "vision_model_config": _resolve_vision_config(settings),
+            "image_generation_config": _resolve_image_generation_config(settings),
             **restored_metadata,
         },
     )
+    if autodream_context is not None:
+        engine.tool_metadata["autodream_context"] = autodream_context
     # Restore messages from a saved session if provided
     if restore_messages:
         restored = sanitize_conversation_messages(
@@ -393,6 +477,9 @@ async def build_runtime(
         session_backend=session_backend or DEFAULT_SESSION_BACKEND,
         extra_skill_dirs=normalized_skill_dirs,
         extra_plugin_roots=normalized_plugin_roots,
+        memory_backend=memory_backend,
+        include_project_memory=include_project_memory,
+        autodream_context=autodream_context,
     )
 
 
@@ -569,24 +656,27 @@ async def handle_line(
             load_hook_registry(bundle.current_settings(), bundle.current_plugins())
         )
 
-    parsed = bundle.commands.lookup(line)
+    command_context = CommandContext(
+        engine=bundle.engine,
+        hooks_summary=bundle.hook_summary(),
+        mcp_summary=bundle.mcp_summary(),
+        plugin_summary=bundle.plugin_summary(),
+        cwd=bundle.cwd,
+        tool_registry=bundle.tool_registry,
+        app_state=bundle.app_state,
+        session_backend=bundle.session_backend,
+        session_id=bundle.session_id,
+        extra_skill_dirs=bundle.extra_skill_dirs,
+        extra_plugin_roots=bundle.extra_plugin_roots,
+        memory_backend=bundle.memory_backend,
+        include_project_memory=bundle.include_project_memory,
+    )
+    parsed = bundle.commands.lookup(line) or lookup_skill_slash_command(line, command_context)
     if parsed is not None:
         command, args = parsed
         result = await command.handler(
             args,
-            CommandContext(
-                engine=bundle.engine,
-                hooks_summary=bundle.hook_summary(),
-                mcp_summary=bundle.mcp_summary(),
-                plugin_summary=bundle.plugin_summary(),
-                cwd=bundle.cwd,
-                tool_registry=bundle.tool_registry,
-                app_state=bundle.app_state,
-                session_backend=bundle.session_backend,
-                session_id=bundle.session_id,
-                extra_skill_dirs=bundle.extra_skill_dirs,
-                extra_plugin_roots=bundle.extra_plugin_roots,
-            ),
+            command_context,
         )
         if result.refresh_runtime:
             refresh_runtime_client(bundle)
@@ -603,6 +693,7 @@ async def handle_line(
                 latest_user_prompt=submit_prompt,
                 extra_skill_dirs=bundle.extra_skill_dirs,
                 extra_plugin_roots=bundle.extra_plugin_roots,
+                include_project_memory=bundle.include_project_memory,
             )
             bundle.engine.set_system_prompt(system_prompt)
             try:
@@ -635,6 +726,7 @@ async def handle_line(
                 latest_user_prompt=_last_user_text(bundle.engine.messages),
                 extra_skill_dirs=bundle.extra_skill_dirs,
                 extra_plugin_roots=bundle.extra_plugin_roots,
+                include_project_memory=bundle.include_project_memory,
             )
             bundle.engine.set_system_prompt(system_prompt)
             turns = result.continue_turns if result.continue_turns is not None else bundle.engine.max_turns
@@ -667,6 +759,7 @@ async def handle_line(
         latest_user_prompt=line,
         extra_skill_dirs=bundle.extra_skill_dirs,
         extra_plugin_roots=bundle.extra_plugin_roots,
+        include_project_memory=bundle.include_project_memory,
     )
     bundle.engine.set_system_prompt(system_prompt)
     try:

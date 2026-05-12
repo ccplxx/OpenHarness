@@ -13,7 +13,7 @@ import asyncio
 import shutil
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from openharness.tools.base import BaseTool, ToolExecutionContext, ToolResult
 
@@ -27,7 +27,10 @@ class GlobToolInput(BaseModel):
         limit: 最大匹配数，范围 1-5000，默认 200
     """
 
-    pattern: str = Field(description="Glob pattern relative to the working directory")
+    pattern: str = Field(
+        description="Glob pattern relative to the working directory",
+        validation_alias=AliasChoices("pattern", "path"),
+    )
     root: str | None = Field(default=None, description="Optional search root")
     limit: int = Field(default=200, ge=1, le=5000)
 
@@ -46,6 +49,7 @@ class GlobTool(BaseTool):
         """该工具为只读，不会修改任何文件。"""
 
     async def execute(self, arguments: GlobToolInput, context: ToolExecutionContext) -> ToolResult:
+<<<<<<< HEAD
         """执行文件 glob 匹配。
 
         Args:
@@ -57,6 +61,10 @@ class GlobTool(BaseTool):
         """
         root = _resolve_path(context.cwd, arguments.root) if arguments.root else context.cwd
         matches = await _glob(root, arguments.pattern, limit=arguments.limit)
+=======
+        root, pattern = _resolve_glob_request(context.cwd, arguments.root, arguments.pattern)
+        matches = await _glob(root, pattern, limit=arguments.limit)
+>>>>>>> upstream/main
         if not matches:
             return ToolResult(output="(no matches)")
         return ToolResult(output="\n".join(matches))
@@ -78,6 +86,33 @@ def _resolve_path(base: Path, candidate: str | None) -> Path:
     if not path.is_absolute():
         path = base / path
     return path.resolve()
+
+
+def _resolve_glob_request(base: Path, root_arg: str | None, pattern: str) -> tuple[Path, str]:
+    """Return a concrete search root plus a root-relative glob pattern."""
+    if not pattern.strip():
+        return (_resolve_path(base, root_arg) if root_arg else base, pattern)
+
+    candidate = Path(pattern).expanduser()
+    if not candidate.is_absolute():
+        return (_resolve_path(base, root_arg) if root_arg else base, pattern)
+
+    parts = candidate.parts
+    first_glob_index = next(
+        (index for index, part in enumerate(parts) if _has_glob_magic(part)),
+        None,
+    )
+    if first_glob_index is None:
+        return candidate.parent.resolve(), candidate.name
+
+    root_parts = parts[:first_glob_index]
+    root = Path(*root_parts).resolve() if root_parts else Path(candidate.anchor or "/").resolve()
+    relative_pattern = str(Path(*parts[first_glob_index:]))
+    return root, relative_pattern
+
+
+def _has_glob_magic(value: str) -> bool:
+    return any(char in value for char in "*?[")
 
 
 def _looks_like_git_repo(path: Path) -> bool:
@@ -104,6 +139,9 @@ def _looks_like_git_repo(path: Path) -> bool:
     return False
 
 
+_GLOB_RG_TIMEOUT_SECONDS = 30.0
+
+
 async def _glob(root: Path, pattern: str, *, limit: int) -> list[str]:
     """快速 glob 实现。
 
@@ -118,6 +156,9 @@ async def _glob(root: Path, pattern: str, *, limit: int) -> list[str]:
     Returns:
         排序后的匹配路径列表
     """
+    if not root.exists() or not root.is_dir():
+        return []
+
     rg = shutil.which("rg")
     # `Path.glob("**/*")` will traverse hidden and ignored paths (like `.venv/`)
     # and can be very slow on real workspaces. Prefer `rg --files`.
@@ -136,18 +177,19 @@ async def _glob(root: Path, pattern: str, *, limit: int) -> list[str]:
                 cmd,
                 cwd=root,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
             )
         else:
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=str(root),
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
             )
 
         lines: list[str] = []
-        try:
+
+        async def _read_stdout() -> None:
             assert process.stdout is not None
             while len(lines) < limit:
                 raw = await process.stdout.readline()
@@ -156,10 +198,26 @@ async def _glob(root: Path, pattern: str, *, limit: int) -> list[str]:
                 line = raw.decode("utf-8", errors="replace").strip()
                 if line:
                     lines.append(line)
+
+        try:
+            try:
+                await asyncio.wait_for(_read_stdout(), timeout=_GLOB_RG_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                pass
         finally:
-            if len(lines) >= limit and process.returncode is None:
-                process.terminate()
-            await process.wait()
+            if process.returncode is None:
+                try:
+                    process.terminate()
+                except ProcessLookupError:
+                    pass
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                    await process.wait()
 
         # Sorting keeps unit tests and user output deterministic for small results.
         lines.sort()

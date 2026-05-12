@@ -121,6 +121,9 @@ class MemorySettings(BaseModel):
     max_entrypoint_lines: int = 200
     context_window_tokens: int | None = None
     auto_compact_threshold_tokens: int | None = None
+    auto_dream_enabled: bool = False
+    auto_dream_min_hours: float = 24.0
+    auto_dream_min_sessions: int = 5
 
 
 class SandboxNetworkSettings(BaseModel):
@@ -395,6 +398,30 @@ def default_provider_profiles() -> dict[str, ProviderProfile]:
             default_model="MiniMax-M2.7",
             base_url="https://api.minimax.io/v1",
         ),
+        "nvidia": ProviderProfile(
+            label="NVIDIA NIM",
+            provider="nvidia",
+            api_format="openai",
+            auth_source="nvidia_api_key",
+            default_model="openai/gpt-oss-120b",
+            base_url="https://integrate.api.nvidia.com/v1",
+        ),
+        "qwen": ProviderProfile(
+            label="Qwen (DashScope)",
+            provider="dashscope",
+            api_format="openai",
+            auth_source="dashscope_api_key",
+            default_model="qwen-plus",
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        ),
+        "modelscope": ProviderProfile(
+            label="ModelScope",
+            provider="modelscope",
+            api_format="openai",
+            auth_source="modelscope_api_key",
+            default_model="deepseek-ai/DeepSeek-V4-Flash",
+            base_url="https://api-inference.modelscope.cn/v1",
+        ),
     }
 
 
@@ -539,6 +566,8 @@ def auth_source_provider_name(auth_source: str) -> str:
         "moonshot_api_key": "moonshot",
         "gemini_api_key": "gemini",
         "minimax_api_key": "minimax",
+        "nvidia_api_key": "nvidia",
+        "modelscope_api_key": "modelscope",
     }
     return mapping.get(auth_source, auth_source)
 
@@ -610,6 +639,10 @@ def default_auth_source_for_provider(provider: str, api_format: str | None = Non
         return "gemini_api_key"
     if provider == "minimax":
         return "minimax_api_key"
+    if provider == "nvidia":
+        return "nvidia_api_key"
+    if provider == "modelscope":
+        return "modelscope_api_key"
     if provider == "openai" or api_format == "openai":
         return "openai_api_key"
     return "anthropic_api_key"
@@ -714,6 +747,63 @@ def _profile_from_flat_settings(settings: "Settings") -> tuple[str, ProviderProf
     return name, profile
 
 
+class ImageGenerationConfig(BaseModel):
+    """Configuration for the image_generation tool."""
+
+    provider: str = "auto"
+    model: str = "gpt-image-2"
+    api_key: str = ""
+    base_url: str = ""
+    codex_model: str = "gpt-5.4"
+    codex_base_url: str = ""
+
+    @classmethod
+    def from_env(cls) -> "ImageGenerationConfig":
+        """Load image generation config from environment variables."""
+        return cls(
+            provider=os.environ.get("OPENHARNESS_IMAGE_GENERATION_PROVIDER", "auto").strip()
+            or "auto",
+            model=os.environ.get("OPENHARNESS_IMAGE_GENERATION_MODEL", "gpt-image-2").strip()
+            or "gpt-image-2",
+            api_key=os.environ.get("OPENHARNESS_IMAGE_GENERATION_API_KEY", "").strip(),
+            base_url=os.environ.get("OPENHARNESS_IMAGE_GENERATION_BASE_URL", "").strip(),
+            codex_model=os.environ.get("OPENHARNESS_IMAGE_GENERATION_CODEX_MODEL", "gpt-5.4").strip()
+            or "gpt-5.4",
+            codex_base_url=os.environ.get("OPENHARNESS_IMAGE_GENERATION_CODEX_BASE_URL", "").strip(),
+        )
+
+    @property
+    def is_configured(self) -> bool:
+        """Return True when either a key provider or Codex provider is selected."""
+        return bool(self.api_key or self.provider in {"auto", "codex"})
+
+
+class VisionModelConfig(BaseModel):
+    """Configuration for the vision model used by the image_to_text tool.
+
+    When the active model does not support multimodal input, the agent loop
+    automatically falls back to this vision model to describe images.
+    """
+
+    model: str = ""
+    api_key: str = ""
+    base_url: str = ""
+
+    @classmethod
+    def from_env(cls) -> "VisionModelConfig":
+        """Load vision model config from environment variables."""
+        return cls(
+            model=os.environ.get("OPENHARNESS_VISION_MODEL", "").strip(),
+            api_key=os.environ.get("OPENHARNESS_VISION_API_KEY", "").strip(),
+            base_url=os.environ.get("OPENHARNESS_VISION_BASE_URL", "").strip(),
+        )
+
+    @property
+    def is_configured(self) -> bool:
+        """Return True when both model and api_key are set."""
+        return bool(self.model and self.api_key)
+
+
 class Settings(BaseModel):
     """OpenHarness 主设置模型。
 
@@ -758,6 +848,10 @@ class Settings(BaseModel):
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
     enabled_plugins: dict[str, bool] = Field(default_factory=dict)
     allow_project_plugins: bool = False
+    allow_project_skills: bool = True
+    project_skill_dirs: list[str] = Field(
+        default_factory=lambda: [".openharness/skills", ".agents/skills", ".claude/skills"]
+    )
     mcp_servers: dict[str, McpServerConfig] = Field(default_factory=dict)
 
     # UI
@@ -769,6 +863,12 @@ class Settings(BaseModel):
     effort: str = "medium"
     passes: int = 1
     verbose: bool = False
+
+    # Vision model (image-to-text fallback)
+    vision: VisionModelConfig = Field(default_factory=VisionModelConfig)
+
+    # Image generation model
+    image_generation: ImageGenerationConfig = Field(default_factory=ImageGenerationConfig)
 
     def merged_profiles(self) -> dict[str, ProviderProfile]:
         """返回用户保存的 Profile 与内置目录合并后的结果。
@@ -806,7 +906,7 @@ class Settings(BaseModel):
             (Profile 名称, ProviderProfile 实例) 的元组。
         """
         profiles = self.merged_profiles()
-        profile_name = (name or self.active_profile or "").strip() or "claude-api"
+        profile_name = (name or self.active_profile or os.environ.get("OPENHARNESS_PROFILE") or "").strip() or "claude-api"
         if profile_name not in profiles:
             fallback_name, fallback = _profile_from_flat_settings(self)
             profiles[fallback_name] = fallback
@@ -856,9 +956,15 @@ class Settings(BaseModel):
             同步了 Profile 字段的新的 Settings 实例。
         """
         profile_name, profile = self.resolve_profile()
-        next_provider = (self.provider or "").strip() or profile.provider
-        next_api_format = (self.api_format or "").strip() or profile.api_format
-        next_base_url = self.base_url if self.base_url is not None else profile.base_url
+        profile_from_env = bool(os.environ.get("OPENHARNESS_PROFILE"))
+        flat_profile_fields_match_profile = profile_from_env or (
+            (self.provider or "").strip() == profile.provider
+            and (self.api_format or "").strip() == profile.api_format
+            and self.base_url == profile.base_url
+        )
+        next_provider = profile.provider if flat_profile_fields_match_profile else (self.provider or "").strip() or profile.provider
+        next_api_format = profile.api_format if flat_profile_fields_match_profile else (self.api_format or "").strip() or profile.api_format
+        next_base_url = profile.base_url if flat_profile_fields_match_profile else (self.base_url if self.base_url is not None else profile.base_url)
         next_context_window_tokens = (
             self.context_window_tokens
             if self.context_window_tokens is not None
@@ -978,6 +1084,15 @@ class Settings(BaseModel):
         provider = profile.provider.strip()
         auth_source = profile.auth_source.strip() or default_auth_source_for_provider(provider, profile.api_format)
         if auth_source in {"codex_subscription", "claude_subscription"}:
+            env_auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN", "").strip()
+            if auth_source == "claude_subscription" and env_auth_token:
+                return ResolvedAuth(
+                    provider=provider,
+                    auth_kind="oauth",
+                    value=env_auth_token,
+                    source="env:ANTHROPIC_AUTH_TOKEN",
+                    state="configured",
+                )
             from openharness.auth.external import (
                 is_third_party_anthropic_endpoint,
                 load_external_credential,
@@ -1042,6 +1157,8 @@ class Settings(BaseModel):
             "dashscope_api_key": "DASHSCOPE_API_KEY",
             "moonshot_api_key": "MOONSHOT_API_KEY",
             "minimax_api_key": "MINIMAX_API_KEY",
+            "nvidia_api_key": "NVIDIA_API_KEY",
+            "modelscope_api_key": "MODELSCOPE_API_KEY",
         }.get(auth_source)
         if env_var:
             env_value = os.environ.get(env_var, "")
@@ -1266,6 +1383,9 @@ def load_settings(config_path: Path | None = None) -> Settings:
     if config_path.exists():
         raw = json.loads(config_path.read_text(encoding="utf-8"))
         settings = Settings.model_validate(raw)
+        env_profile = os.environ.get("OPENHARNESS_PROFILE")
+        if env_profile:
+            settings = settings.model_copy(update={"active_profile": env_profile.strip()})
         if "profiles" not in raw or "active_profile" not in raw:
             profile_name, profile = _profile_from_flat_settings(settings)
             merged_profiles = settings.merged_profiles()
@@ -1278,7 +1398,11 @@ def load_settings(config_path: Path | None = None) -> Settings:
             )
         return _apply_env_overrides(settings.materialize_active_profile())
 
-    return _apply_env_overrides(Settings().materialize_active_profile())
+    settings = Settings()
+    env_profile = os.environ.get("OPENHARNESS_PROFILE")
+    if env_profile:
+        settings = settings.model_copy(update={"active_profile": env_profile.strip()})
+    return _apply_env_overrides(settings.materialize_active_profile())
 
 
 def save_settings(settings: Settings, config_path: Path | None = None) -> None:

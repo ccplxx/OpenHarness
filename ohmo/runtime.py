@@ -14,9 +14,10 @@ from openharness.ui.backend_host import run_backend_host
 from openharness.ui.runtime import build_runtime, close_runtime, handle_line, start_runtime
 from openharness.ui.react_launcher import _resolve_npm, _resolve_tsx, get_frontend_dir
 
+from ohmo.memory import create_memory_command_backend
 from ohmo.prompts import build_ohmo_system_prompt
 from ohmo.session_storage import OhmoSessionBackend
-from ohmo.workspace import get_plugins_dir, get_skills_dir, initialize_workspace
+from ohmo.workspace import get_memory_dir, get_plugins_dir, get_sessions_dir, get_skills_dir, initialize_workspace
 
 
 def _ohmo_extra_roots(workspace: str | Path | None) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -54,6 +55,14 @@ async def run_ohmo_backend(
         session_backend=OhmoSessionBackend(workspace_root),
         extra_skill_dirs=extra_skill_dirs,
         extra_plugin_roots=extra_plugin_roots,
+        memory_backend=create_memory_command_backend(workspace_root),
+        include_project_memory=False,
+        autodream_context={
+            "memory_dir": str(get_memory_dir(workspace_root)),
+            "session_dir": str(get_sessions_dir(workspace_root)),
+            "app_label": "ohmo personal memory",
+            "runner_module": "ohmo",
+        },
     )
 
 
@@ -160,13 +169,24 @@ async def run_ohmo_print_mode(
             enforce_max_turns=max_turns is not None,
             extra_skill_dirs=extra_skill_dirs,
             extra_plugin_roots=extra_plugin_roots,
+            memory_backend=create_memory_command_backend(workspace_root),
+            include_project_memory=False,
+            autodream_context={
+                "memory_dir": str(get_memory_dir(workspace_root)),
+                "session_dir": str(get_sessions_dir(workspace_root)),
+                "app_label": "ohmo personal memory",
+                "runner_module": "ohmo",
+            },
         )
         await start_runtime(bundle)
 
         async def _print_system(message: str) -> None:
             print(message, file=sys.stderr)
 
+        saw_error = False
+
         async def _render_event(event) -> None:
+            nonlocal saw_error
             if isinstance(event, AssistantTextDelta):
                 sys.stdout.write(event.text)
                 sys.stdout.flush()
@@ -174,6 +194,7 @@ async def run_ohmo_print_mode(
                 sys.stdout.write("\n")
                 sys.stdout.flush()
             elif isinstance(event, ErrorEvent):
+                saw_error = True
                 print(event.message, file=sys.stderr)
             elif isinstance(event, CompactProgressEvent):
                 if event.message:
@@ -192,6 +213,6 @@ async def run_ohmo_print_mode(
             clear_output=_clear_output,
         )
         await close_runtime(bundle)
-        return 0
+        return 1 if saw_error else 0
     finally:
         os.chdir(previous_cwd)

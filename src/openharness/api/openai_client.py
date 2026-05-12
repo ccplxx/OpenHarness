@@ -308,6 +308,7 @@ class OpenAICompatibleClient:
     """
 
     def __init__(self, api_key: str, *, base_url: str | None = None, timeout: float | None = None) -> None:
+<<<<<<< HEAD
         """初始化 OpenAI 兼容 API 客户端。
 
         Args:
@@ -316,6 +317,12 @@ class OpenAICompatibleClient:
             timeout: 请求超时秒数，若为 ``None`` 使用 SDK 默认值。
         """
         kwargs: dict[str, Any] = {"api_key": api_key}
+=======
+        kwargs: dict[str, Any] = {
+            "api_key": api_key,
+            "default_headers": {"Authorization": f"Bearer {api_key}"},
+        }
+>>>>>>> upstream/main
         normalized_base_url = _normalize_openai_base_url(base_url)
         if normalized_base_url:
             kwargs["base_url"] = normalized_base_url

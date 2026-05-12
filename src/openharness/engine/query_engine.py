@@ -20,11 +20,13 @@ from typing import AsyncIterator
 from openharness.api.client import SupportsStreamingMessages
 from openharness.engine.cost_tracker import CostTracker
 from openharness.coordinator.coordinator_mode import get_coordinator_user_context
-from openharness.engine.messages import ConversationMessage, TextBlock, ToolResultBlock
+from openharness.engine.messages import ConversationMessage, TextBlock, ToolResultBlock, sanitize_conversation_messages
 from openharness.engine.query import AskUserPrompt, PermissionPrompt, QueryContext, remember_user_goal, run_query
 from openharness.engine.stream_events import AssistantTurnComplete, StreamEvent
+from openharness.config.settings import Settings
 from openharness.hooks import HookEvent, HookExecutor
 from openharness.permissions.checker import PermissionChecker
+from openharness.services.autodream.service import schedule_auto_dream
 from openharness.tools.base import ToolRegistry
 
 
@@ -56,6 +58,7 @@ class QueryEngine:
         ask_user_prompt: AskUserPrompt | None = None,
         hook_executor: HookExecutor | None = None,
         tool_metadata: dict[str, object] | None = None,
+        settings: Settings | None = None,
     ) -> None:
         self._api_client = api_client
         self._tool_registry = tool_registry
@@ -71,6 +74,7 @@ class QueryEngine:
         self._ask_user_prompt = ask_user_prompt
         self._hook_executor = hook_executor
         self._tool_metadata = tool_metadata or {}
+        self._settings = settings
         self._messages: list[ConversationMessage] = []
         self._cost_tracker = CostTracker()
 
@@ -154,6 +158,20 @@ class QueryEngine:
         """替换内存中的对话历史为给定的消息列表。"""
         self._messages = list(messages)
 
+    def _schedule_auto_dream(self) -> None:
+        """Fire-and-forget background memory consolidation after a user turn."""
+        if self._settings is None:
+            return
+        context = self._tool_metadata.get("autodream_context")
+        kwargs = dict(context) if isinstance(context, dict) else {}
+        schedule_auto_dream(
+            cwd=self._cwd,
+            settings=self._settings,
+            model=self._model,
+            current_session_id=str(self._tool_metadata.get("session_id") or ""),
+            **kwargs,
+        )
+
     def has_pending_continuation(self) -> bool:
         """判断对话是否以未完成的工具结果结尾，需要后续模型轮次。
 
@@ -187,8 +205,9 @@ class QueryEngine:
             if isinstance(prompt, ConversationMessage)
             else ConversationMessage.from_user_text(prompt)
         )
-        if user_message.text.strip():
+        if user_message.text.strip() and not self._tool_metadata.pop("_suppress_next_user_goal", False):
             remember_user_goal(self._tool_metadata, user_message.text)
+        self._messages = sanitize_conversation_messages(self._messages)
         self._messages.append(user_message)
         if self._hook_executor is not None:
             await self._hook_executor.execute(
@@ -218,12 +237,15 @@ class QueryEngine:
         coordinator_context = self._build_coordinator_context_message()
         if coordinator_context is not None:
             query_messages.append(coordinator_context)
-        async for event, usage in run_query(context, query_messages):
-            if isinstance(event, AssistantTurnComplete):
-                self._messages = list(query_messages)
-            if usage is not None:
-                self._cost_tracker.add(usage)
-            yield event
+        try:
+            async for event, usage in run_query(context, query_messages):
+                if isinstance(event, AssistantTurnComplete):
+                    self._messages = list(query_messages)
+                if usage is not None:
+                    self._cost_tracker.add(usage)
+                yield event
+        finally:
+            self._schedule_auto_dream()
 
     async def continue_pending(self, *, max_turns: int | None = None) -> AsyncIterator[StreamEvent]:
         """继续被中断的工具调用循环，不追加新的用户消息。

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
 
@@ -65,17 +66,28 @@ def validate_cron_expression(expression: str) -> bool:
     return croniter.is_valid(expression)
 
 
-def next_run_time(expression: str, base: datetime | None = None) -> datetime:
-    """计算给定 Cron 表达式的下一次执行时间。
+def validate_timezone(tz: str | None) -> bool:
+    """Return True if *tz* is a valid IANA timezone or empty."""
+    if not tz:
+        return True
+    try:
+        ZoneInfo(tz)
+    except Exception:
+        return False
+    return True
 
-    Args:
-        expression: Cron 调度表达式。
-        base: 计算基准时间，默认为当前 UTC 时间。
 
-    Returns:
-        datetime: 下一次执行时间。
+def next_run_time(expression: str, base: datetime | None = None, tz: str | None = None) -> datetime:
+    """Return the next run time for a cron expression.
+
+    The returned datetime is always UTC. If *tz* is provided, the cron expression
+    is interpreted in that IANA timezone.
     """
     base = base or datetime.now(timezone.utc)
+    if tz:
+        local_base = base.astimezone(ZoneInfo(tz))
+        local_next = croniter(expression, local_base).get_next(datetime)
+        return local_next.astimezone(timezone.utc)
     return croniter(expression, base).get_next(datetime)
 
 
@@ -93,7 +105,7 @@ def upsert_cron_job(job: dict[str, Any]) -> None:
 
     schedule = job.get("schedule", "")
     if validate_cron_expression(schedule):
-        job["next_run"] = next_run_time(schedule).isoformat()
+        job["next_run"] = next_run_time(schedule, tz=job.get("timezone") or job.get("tz")).isoformat()
 
     with exclusive_file_lock(_cron_lock_path()):
         jobs = [existing for existing in load_cron_jobs() if existing.get("name") != job.get("name")]
@@ -171,6 +183,6 @@ def mark_job_run(name: str, *, success: bool) -> None:
                 job["last_status"] = "success" if success else "failed"
                 schedule = job.get("schedule", "")
                 if validate_cron_expression(schedule):
-                    job["next_run"] = next_run_time(schedule, now).isoformat()
+                    job["next_run"] = next_run_time(schedule, now, tz=job.get("timezone") or job.get("tz")).isoformat()
                 save_cron_jobs(jobs)
                 return

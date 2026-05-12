@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
-import shlex
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -17,6 +17,31 @@ from openharness.tasks.types import TaskRecord, TaskStatus, TaskType
 from openharness.utils.shell import create_shell_subprocess
 
 log = logging.getLogger(__name__)
+_TASK_RESTART_NOTICE = "[OpenHarness] Agent task restarted; prior interactive context was not preserved.\n"
+
+
+def _encode_task_worker_payload(data: str) -> bytes:
+    """Serialize one worker input as a single JSON line.
+
+    Plain-text prompts may contain embedded newlines, so they cannot be written
+    directly to a readline()-based worker protocol. We wrap them in a JSON
+    object with a ``text`` field, while preserving already-structured payloads
+    emitted by teammate backends.
+    """
+
+    stripped = data.rstrip("\n")
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        payload = None
+
+    if isinstance(payload, dict) and isinstance(payload.get("text"), str):
+        framed = stripped
+    elif "\n" not in stripped and "\r" not in stripped:
+        framed = stripped
+    else:
+        framed = json.dumps({"text": stripped}, ensure_ascii=False)
+    return (framed + "\n").encode("utf-8")
 
 CompletionListener = Callable[[TaskRecord], Awaitable[None] | None]
 
@@ -36,12 +61,34 @@ class BackgroundTaskManager:
     async def create_shell_task(
         self,
         *,
-        command: str,
+        command: str | None = None,
         description: str,
         cwd: str | Path,
         task_type: TaskType = "local_bash",
+        env: dict[str, str] | None = None,
+        argv: list[str] | None = None,
     ) -> TaskRecord:
-        """Start a background shell command."""
+        """Start a background command.
+
+        Either ``command`` (a shell-evaluated string) or ``argv`` (a direct
+        argv list) must be supplied. The ``argv`` form bypasses shell
+        invocation entirely — it spawns the executable directly via
+        ``asyncio.create_subprocess_exec(*argv)`` — which is the right choice
+        for teammate spawning on Windows: Git Bash cannot reliably exec
+        Windows-pathed binaries (e.g. ``C:\\Users\\...\\python.exe``) when it
+        is itself launched via ``create_subprocess_exec`` with that path
+        embedded in a ``-lc`` string, even though the same shell call works
+        interactively. Bypassing the shell sidesteps that entire class of
+        platform-quoting bug.
+
+        ``env`` is merged with ``os.environ`` when the subprocess is launched,
+        so callers should pass only the variables they want to add or
+        override.
+        """
+        if command is None and argv is None:
+            raise ValueError("create_shell_task requires either command or argv")
+        if command is not None and argv is not None:
+            raise ValueError("create_shell_task accepts only one of command or argv")
         task_id = _task_id(task_type)
         output_path = get_tasks_dir() / f"{task_id}.log"
         record = TaskRecord(
@@ -54,6 +101,8 @@ class BackgroundTaskManager:
             command=command,
             created_at=time.time(),
             started_at=time.time(),
+            env=dict(env) if env is not None else None,
+            argv=list(argv) if argv is not None else None,
         )
         output_path.write_text("", encoding="utf-8")
         self._tasks[task_id] = record
@@ -72,24 +121,34 @@ class BackgroundTaskManager:
         model: str | None = None,
         api_key: str | None = None,
         command: str | None = None,
+        env: dict[str, str] | None = None,
+        argv: list[str] | None = None,
     ) -> TaskRecord:
-        """Start a local agent task as a subprocess."""
-        if command is None:
+        """Start a local agent task as a subprocess.
+
+        Prefer ``argv`` (direct exec, no shell) over ``command`` (shell-
+        evaluated) for teammate spawn — see :meth:`create_shell_task` for
+        the cross-platform reasoning. ``env`` is forwarded to
+        :meth:`create_shell_task` and ultimately merged with ``os.environ``
+        at process spawn time.
+        """
+        if command is None and argv is None:
             effective_api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
             if not effective_api_key:
                 raise ValueError(
-                    "Local agent tasks require ANTHROPIC_API_KEY or an explicit command override"
+                    "Local agent tasks require ANTHROPIC_API_KEY or an explicit command/argv override"
                 )
-            cmd = ["python", "-m", "openharness", "--api-key", effective_api_key]
+            argv = ["python", "-m", "openharness", "--api-key", effective_api_key]
             if model:
-                cmd.extend(["--model", model])
-            command = " ".join(shlex.quote(part) for part in cmd)
+                argv.extend(["--model", model])
 
         record = await self.create_shell_task(
             command=command,
             description=description,
             cwd=cwd,
             task_type=task_type,
+            env=env,
+            argv=argv,
         )
         updated = replace(record, prompt=prompt)
         if task_type != "local_agent":
@@ -150,21 +209,23 @@ class BackgroundTaskManager:
 
         task.status = "killed"
         task.ended_at = time.time()
+        await self._notify_completion_listeners(task)
         return task
 
     async def write_to_task(self, task_id: str, data: str) -> None:
         """Write one line to task stdin, auto-resuming local agents when needed."""
         task = self._require_task(task_id)
+        payload = _encode_task_worker_payload(data)
         async with self._input_locks[task_id]:
             process = await self._ensure_writable_process(task)
-            process.stdin.write((data.rstrip("\n") + "\n").encode("utf-8"))
+            process.stdin.write(payload)
             try:
                 await process.stdin.drain()
             except (BrokenPipeError, ConnectionResetError):
                 if task.type not in {"local_agent", "remote_agent", "in_process_teammate"}:
                     raise ValueError(f"Task {task_id} does not accept input") from None
                 process = await self._restart_agent_task(task)
-                process.stdin.write((data.rstrip("\n") + "\n").encode("utf-8"))
+                process.stdin.write(payload)
                 await process.stdin.drain()
 
     def read_task_output(self, task_id: str, *, max_bytes: int = 12000) -> str:
@@ -228,18 +289,43 @@ class BackgroundTaskManager:
 
     async def _start_process(self, task_id: str) -> asyncio.subprocess.Process:
         task = self._require_task(task_id)
-        if task.command is None:
-            raise ValueError(f"Task {task_id} does not have a command to run")
+        if task.command is None and task.argv is None:
+            raise ValueError(f"Task {task_id} does not have a command or argv to run")
 
         generation = self._generations.get(task_id, 0) + 1
         self._generations[task_id] = generation
-        process = await create_shell_subprocess(
-            task.command,
-            cwd=task.cwd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
+        # Merge task-specific env vars on top of the parent process environment
+        # so the child sees both. Passing ``None`` lets the OS inherit env
+        # directly, which is the legacy behaviour for plain shell tasks.
+        merged_env: dict[str, str] | None
+        if task.env:
+            merged_env = {**os.environ, **task.env}
+        else:
+            merged_env = None
+
+        if task.argv is not None:
+            # Direct-exec route. No shell. Used for teammate spawn so we
+            # don't have to round-trip Windows paths through Git Bash, which
+            # cannot reliably exec ``C:\\...\\python.exe`` when launched
+            # itself via ``asyncio.create_subprocess_exec`` (see #230).
+            process = await asyncio.create_subprocess_exec(
+                *task.argv,
+                cwd=str(Path(task.cwd).resolve()),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env=merged_env,
+            )
+        else:
+            assert task.command is not None
+            process = await create_shell_subprocess(
+                task.command,
+                cwd=task.cwd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env=merged_env,
+            )
         self._processes[task_id] = process
         self._waiters[task_id] = asyncio.create_task(
             self._watch_process(task_id, process, generation)
@@ -258,8 +344,8 @@ class BackgroundTaskManager:
         return await self._restart_agent_task(task)
 
     async def _restart_agent_task(self, task: TaskRecord) -> asyncio.subprocess.Process:
-        if task.command is None:
-            raise ValueError(f"Task {task.id} does not have a restart command")
+        if task.command is None and task.argv is None:
+            raise ValueError(f"Task {task.id} does not have a restart command or argv")
 
         waiter = self._waiters.get(task.id)
         if waiter is not None and not waiter.done():
@@ -267,10 +353,13 @@ class BackgroundTaskManager:
 
         restart_count = int(task.metadata.get("restart_count", "0")) + 1
         task.metadata["restart_count"] = str(restart_count)
+        task.metadata["status_note"] = "Task restarted; prior interactive context was not preserved."
         task.status = "running"
         task.started_at = time.time()
         task.ended_at = None
         task.return_code = None
+        with task.output_file.open("ab") as handle:
+            handle.write(_TASK_RESTART_NOTICE.encode("utf-8"))
         return await self._start_process(task.id)
 
     async def _notify_completion_listeners(self, task: TaskRecord) -> None:
@@ -370,6 +459,7 @@ def _task_id(task_type: TaskType) -> str:
         "local_agent": "a",
         "remote_agent": "r",
         "in_process_teammate": "t",
+        "dream": "d",
     }
     return f"{prefixes[task_type]}{uuid4().hex[:8]}"
 

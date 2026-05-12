@@ -17,11 +17,13 @@
 from __future__ import annotations
 
 import logging
+import os
 import platform
 import subprocess
 import sys
 from abc import ABC, abstractmethod
 from typing import Any
+from urllib.parse import urlparse
 
 log = logging.getLogger(__name__)
 
@@ -131,6 +133,7 @@ class DeviceCodeFlow(AuthFlow):
 
     @staticmethod
     def _try_open_browser(url: str) -> bool:
+<<<<<<< HEAD
         """尝试在默认浏览器中打开指定的 URL。
 
         根据当前操作系统选择合适的命令打开浏览器：
@@ -144,18 +147,29 @@ class DeviceCodeFlow(AuthFlow):
         Returns:
             若浏览器启动成功返回 ``True``，否则返回 ``False``。
         """
+=======
+        """Attempt to open *url* in the default browser; return True if likely succeeded."""
+        # Only http(s) URLs are valid here. ShellExecute / xdg-open / `open`
+        # all resolve unrecognised tokens (e.g. ``file:``, ``javascript:``, a
+        # bare executable name) against the registry or PATH, so refusing
+        # everything else removes a class of unintended-action footguns.
+        if urlparse(url).scheme not in {"http", "https"}:
+            return False
+>>>>>>> upstream/main
         try:
             plat = platform.system()
             if plat == "Darwin":
                 subprocess.Popen(["open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 return True
             if plat == "Windows":
-                subprocess.Popen(
-                    ["start", "", url],
-                    shell=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+                # ShellExecute via os.startfile — does NOT route through
+                # cmd.exe, so ``&`` / ``|`` / ``^`` in the URL cannot be
+                # interpreted as command separators.  Replaces the prior
+                # ``subprocess.Popen([...], shell=True)`` form, which would
+                # execute appended commands when a hostile or compromised
+                # device-flow endpoint returned a URL like
+                # ``https://x.com&calc.exe``.
+                os.startfile(url)  # type: ignore[attr-defined]
                 return True
             # Linux / WSL
             proc = subprocess.Popen(
@@ -170,6 +184,7 @@ class DeviceCodeFlow(AuthFlow):
                 return True
         except Exception:
             return False
+        return False
 
     def run(self) -> str:
         """执行 GitHub 设备码认证流程。

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 
-TaskType = Literal["local_bash", "local_agent", "remote_agent", "in_process_teammate"]
+TaskType = Literal["local_bash", "local_agent", "remote_agent", "in_process_teammate", "dream"]
 TaskStatus = Literal["pending", "running", "completed", "failed", "killed"]
 
 
@@ -28,3 +28,5 @@ class TaskRecord:
     ended_at: float | None = None
     return_code: int | None = None
     metadata: dict[str, str] = field(default_factory=dict)
+    env: dict[str, str] | None = None
+    argv: list[str] | None = None

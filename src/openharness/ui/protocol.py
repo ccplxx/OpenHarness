@@ -41,6 +41,7 @@ class FrontendRequest(BaseModel):
         "list_sessions",
         "select_command",
         "apply_select_command",
+        "interrupt",
         "shutdown",
     ]
     line: str | None = None

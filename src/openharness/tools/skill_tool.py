@@ -31,7 +31,7 @@ class SkillTool(BaseTool):
     """
 
     name = "skill"
-    description = "Read a bundled, user, or plugin skill by name."
+    description = "Read a bundled, user, project, or plugin skill by name."
     input_model = SkillToolInput
 
     def is_read_only(self, arguments: SkillToolInput) -> bool:
@@ -57,4 +57,10 @@ class SkillTool(BaseTool):
         skill = registry.get(arguments.name) or registry.get(arguments.name.lower()) or registry.get(arguments.name.title())
         if skill is None:
             return ToolResult(output=f"Skill not found: {arguments.name}", is_error=True)
+        if skill.disable_model_invocation:
+            command_name = skill.command_name or skill.name
+            return ToolResult(
+                output=f"Skill {command_name} can only be invoked by the user as /{command_name}.",
+                is_error=True,
+            )
         return ToolResult(output=skill.content)

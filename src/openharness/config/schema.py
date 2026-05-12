@@ -100,17 +100,15 @@ class DiscordConfig(BaseChannelConfig):
 
 
 class FeishuConfig(BaseChannelConfig):
-    """飞书（Feishu）通道配置。
-
-    通过 App ID / App Secret 接入飞书开放平台，
-    支持加密和验证机制。
-
-    属性：
-        app_id: 飞书应用的 App ID。
-        app_secret: 飞书应用的 App Secret。
-        encrypt_key: 消息加密密钥。
-        verification_token: 事件订阅验证 Token。
-    """
+    app_id: str = ""
+    app_secret: str = ""
+    encrypt_key: str = ""
+    verification_token: str = ""
+    # Group reply policy is enforced by ohmo gateway because managed-group
+    # metadata lives outside the generic Feishu channel adapter.
+    group_policy: str = "managed_or_mention"
+    bot_open_id: str = ""
+    bot_names: list[str] = Field(default_factory=lambda: ["ohmo", "openclaw", "openharness"])
 
 
 class DingTalkConfig(BaseChannelConfig):
@@ -219,13 +217,5 @@ class ChannelConfigs(_CompatModel):
 
 
 class Config(_CompatModel):
-    """顶层兼容性配置模型。
-
-    聚合通道配置和提供商配置，作为通道适配器的统一入口配置对象。
-    继承自 _CompatModel，允许透传适配器特有的额外字段。
-
-    属性：
-        channels: 通道配置集合。
-        providers: 提供商配置集合。
-    """
-
+    channels: ChannelConfigs = Field(default_factory=ChannelConfigs)
+    providers: ProviderConfigs = Field(default_factory=ProviderConfigs)
