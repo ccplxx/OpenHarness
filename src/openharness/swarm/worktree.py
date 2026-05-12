@@ -1,5 +1,7 @@
 """Swarm 智能体的 Git Worktree 隔离模块。
 
+git workTree: 允许你在同一个仓库中同时检出多个分支到不同的目录，并且可以独立工作。
+
 本模块为 Swarm 模式下的智能体提供文件系统级隔离，通过 git worktree
 为每个智能体创建独立的工作目录和分支，使其可以并行修改代码而不冲突。
 
@@ -16,12 +18,12 @@ Worktree 存储在 ``~/.openharness/worktrees/<slug>/`` 下，slug 中的 ``/``
 
 from __future__ import annotations
 
-import asyncio
 import os
 import re
 import time
-from dataclasses import dataclass
+import asyncio
 from pathlib import Path
+from dataclasses import dataclass
 
 # ---------------------------------------------------------------------------
 # Slug validation

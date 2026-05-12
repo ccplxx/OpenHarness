@@ -245,6 +245,7 @@ class BackendDetectionResult:
 @dataclass
 class TeammateIdentity:
     """智能体代理的身份标识字段。
+    一个team有多个teammate，一个teammate关联一个agent_id, 一个agent执行一个任务
 
     Attributes:
         agent_id: 唯一代理标识符（格式：agentName@teamName）。
@@ -272,7 +273,7 @@ class TeammateIdentity:
 
 @dataclass
 class TeammateSpawnConfig:
-    """智能体生成配置（适用于所有执行模式）。
+    """智能体生成配置（适用于所有执行模式）。 完整的Teammate信息
 
     Attributes:
         name: 人类可读的代理名称。
@@ -378,6 +379,7 @@ class SpawnResult:
     """用于生成该代理的后端类型。"""
 
     success: bool = True
+
     error: str | None = None
 
     pane_id: PaneId | None = None

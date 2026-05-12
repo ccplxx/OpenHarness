@@ -26,12 +26,12 @@ from openharness.swarm.lockfile import exclusive_file_lock
 
 MessageType = Literal[
     "user_message",
-    "permission_request",
-    "permission_response",
-    "sandbox_permission_request",
-    "sandbox_permission_response",
-    "shutdown",
-    "idle_notification",
+    "permission_request",  # 权限强求
+    "permission_response",  # 权限反馈
+    "sandbox_permission_request",  # 沙箱权限请求
+    "sandbox_permission_response",  # 沙箱权限反馈
+    "shutdown",  # 关闭
+    "idle_notification",  # 等待中
 ]
 
 
@@ -41,8 +41,8 @@ class MailboxMessage:
 
     id: str
     type: MessageType
-    sender: str
-    recipient: str
+    sender: str  # 发送者
+    recipient: str  # 接收者
     payload: dict[str, Any]
     timestamp: float
     read: bool = False

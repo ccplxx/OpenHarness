@@ -20,11 +20,11 @@ class TaskRecord:
     status: TaskStatus
     description: str
     cwd: str
-    output_file: Path
+    output_file: Path  # 输出写入文件而非内存，支持大输出和持久化
     command: str | None = None
     prompt: str | None = None
     created_at: float = 0.0
     started_at: float | None = None
     ended_at: float | None = None
     return_code: int | None = None
-    metadata: dict[str, str] = field(default_factory=dict)
+    metadata: dict[str, str] = field(default_factory=dict)  # 允许自定义字段

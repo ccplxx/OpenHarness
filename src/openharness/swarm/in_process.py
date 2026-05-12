@@ -168,7 +168,10 @@ class TeammateContext:
         """优雅取消事件（委托到 :attr:`abort_controller`）。"""
         return self.abort_controller.cancel_event
 
-
+# 利用 Python 的 ContextVar（上下文变量）在异步调用链或不同协程之间安全、优雅地传递 TeammateContext 对象。
+# 任何能访问该变量的函数都可以直接 _teammate_context_var.get() 获取它。
+# 支持异步/并发环境：在使用 asyncio 或类似并发机制时，普通的全局变量会被所有协程/任务共享，容易导致数据错乱。
+# 而 ContextVar 会为每个独立的异步任务保存一份独立的副本，因此不同请求/任务之间的 TeammateContext 天然隔离、互不干扰。
 _teammate_context_var: ContextVar[TeammateContext | None] = ContextVar(
     "_teammate_context_var", default=None
 )
@@ -199,6 +202,7 @@ async def start_in_process_teammate(
     abort_controller: TeammateAbortController,
     query_context: Any | None = None,
 ) -> None:
+    # * 的作用是标记位置参数结束，后续参数必须使用关键字参数传递。
     """运行进程内 teammate 的智能体查询循环。
 
     此协程由 :class:`InProcessBackend` 作为 :class:`asyncio.Task` 启动，执行：

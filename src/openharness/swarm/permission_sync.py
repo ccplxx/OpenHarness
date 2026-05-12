@@ -177,6 +177,7 @@ class SwarmPermissionRequest:
         Returns:
             包含所有请求字段的字典。
         """
+        return {
             "id": self.id,
             "worker_id": self.worker_id,
             "worker_name": self.worker_name,
@@ -208,6 +209,7 @@ class SwarmPermissionRequest:
         Returns:
             反序列化后的 :class:`SwarmPermissionRequest` 实例。
         """
+        return cls(
             id=data["id"],
             worker_id=data.get("worker_id", data.get("workerId", "")),
             worker_name=data.get("worker_name", data.get("workerName", "")),

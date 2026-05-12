@@ -158,6 +158,7 @@ class BackendRegistry:
         logger.debug("[BackendRegistry] Starting backend detection...")
 
         # Priority 1: in-process fallback (activated after a prior failed spawn)
+        # in-process
         if self._in_process_fallback_active:
             logger.debug(
                 "[BackendRegistry] in_process fallback active — selecting in_process"

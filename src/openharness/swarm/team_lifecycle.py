@@ -76,6 +76,12 @@ class AllowedPath:
         Returns:
             包含 path、tool_name、added_by、added_at 的字典。
         """
+        return {
+            "path": self.path,
+            "tool_name": self.tool_name,
+            "added_by": self.added_by,
+            "added_at": self.added_at,
+        }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AllowedPath":
@@ -89,6 +95,7 @@ class AllowedPath:
         Returns:
             反序列化后的 :class:`AllowedPath` 实例。
         """
+        return cls(
             path=data["path"],
             tool_name=data.get("tool_name", data.get("toolName", "")),
             added_by=data.get("added_by", data.get("addedBy", "")),
@@ -154,6 +161,7 @@ class TeamMember:
         Returns:
             包含所有成员字段的字典。
         """
+        return {
             "backend_type": self.backend_type,
             "joined_at": self.joined_at,
             "agent_type": self.agent_type,
@@ -182,6 +190,7 @@ class TeamMember:
         Returns:
             反序列化后的 :class:`TeamMember` 实例。
         """
+        return cls(
             agent_id=data["agent_id"],
             name=data["name"],
             backend_type=data["backend_type"],
@@ -201,7 +210,6 @@ class TeamMember:
             permissions=data.get("permissions", []),
             status=data.get("status", "active"),
         )
-
 
 @dataclass
 class TeamFile:
@@ -244,6 +252,7 @@ class TeamFile:
         Returns:
             包含所有团队字段的字典。
         """
+        return {
             "created_at": self.created_at,
             "lead_agent_id": self.lead_agent_id,
             "lead_session_id": self.lead_session_id,

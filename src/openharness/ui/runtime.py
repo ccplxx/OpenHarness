@@ -238,7 +238,7 @@ async def build_runtime(
     7. 启动 Docker 沙箱（如配置）
     """
 
-    # setting配置覆盖
+    # 1.setting配置覆盖
     settings_overrides: dict[str, Any] = {
         "model": model,
         "max_turns": max_turns,
@@ -252,31 +252,33 @@ async def build_runtime(
     settings = load_settings().merge_cli_overrides(**settings_overrides)
     cwd = str(Path(cwd).expanduser().resolve()) if cwd else str(Path.cwd())
 
-    # 外部skill、plugin 加载
+    # 2. 外部skill、plugin 加载
     normalized_skill_dirs = tuple(str(Path(path).expanduser().resolve()) for path in (extra_skill_dirs or ()))
     normalized_plugin_roots = tuple(str(Path(path).expanduser().resolve()) for path in (extra_plugin_roots or ()))
     plugins = load_plugins(settings, cwd, extra_roots=normalized_plugin_roots)
     
-    # api_client 获取
+    # 3. api_client 获取
     if api_client:
         resolved_api_client = api_client
     else:
         resolved_api_client = _resolve_api_client_from_settings(settings)
 
-    # mcp manager
+    # 4. mcp manager
     mcp_manager = McpClientManager(load_mcp_server_configs(settings, plugins))
     await mcp_manager.connect_all()
     
+    # 5. tool Register plugin-provided tools
     tool_registry = create_default_tool_registry(mcp_manager)
-    # Register plugin-provided tools
     for plugin in plugins:
         if plugin.enabled and plugin.tools:
             for tool in plugin.tools:
                 tool_registry.register(tool)
+    
+    # 6. provider
     provider = detect_provider(settings)
     bridge_manager = get_bridge_manager()
     
-    # 创建app state
+    # 7. 创建app state
     app_state = AppStateStore(
         AppState(
             # Show the effective runtime model (after CLI/env/profile merges),
@@ -376,7 +378,7 @@ async def build_runtime(
         },
     )
 
-    # Restore messages from a saved session if provided
+    # 恢复会话历史，Restore messages from a saved session if provided
     if restore_messages:
         restored = sanitize_conversation_messages(
             [ConversationMessage.model_validate(m) for m in restore_messages]
@@ -612,7 +614,7 @@ async def handle_line(
             refresh_runtime_client(bundle)
         await _render_command_result(result, print_system, clear_output, render_event)
         
-        # 更新model
+        # 更新model 或 prompt
         if result.submit_prompt is not None:
             original_model = bundle.engine.model
             if result.submit_model:
@@ -668,6 +670,7 @@ async def handle_line(
                 pending = _format_pending_tool_results(bundle.engine.messages)
                 if pending:
                     await print_system(pending)
+                    
             bundle.session_backend.save_snapshot(
                 cwd=bundle.cwd,
                 model=settings.model,
