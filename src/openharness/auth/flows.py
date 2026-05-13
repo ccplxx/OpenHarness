@@ -133,21 +133,6 @@ class DeviceCodeFlow(AuthFlow):
 
     @staticmethod
     def _try_open_browser(url: str) -> bool:
-<<<<<<< HEAD
-        """尝试在默认浏览器中打开指定的 URL。
-
-        根据当前操作系统选择合适的命令打开浏览器：
-        - macOS: 使用 ``open`` 命令
-        - Windows: 使用 ``start`` 命令
-        - Linux/WSL: 使用 ``xdg-open`` 命令
-
-        Args:
-            url: 要在浏览器中打开的 URL 地址。
-
-        Returns:
-            若浏览器启动成功返回 ``True``，否则返回 ``False``。
-        """
-=======
         """Attempt to open *url* in the default browser; return True if likely succeeded."""
         # Only http(s) URLs are valid here. ShellExecute / xdg-open / `open`
         # all resolve unrecognised tokens (e.g. ``file:``, ``javascript:``, a
@@ -155,7 +140,6 @@ class DeviceCodeFlow(AuthFlow):
         # everything else removes a class of unintended-action footguns.
         if urlparse(url).scheme not in {"http", "https"}:
             return False
->>>>>>> upstream/main
         try:
             plat = platform.system()
             if plat == "Darwin":

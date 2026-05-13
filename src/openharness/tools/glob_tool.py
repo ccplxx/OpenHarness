@@ -49,22 +49,8 @@ class GlobTool(BaseTool):
         """该工具为只读，不会修改任何文件。"""
 
     async def execute(self, arguments: GlobToolInput, context: ToolExecutionContext) -> ToolResult:
-<<<<<<< HEAD
-        """执行文件 glob 匹配。
-
-        Args:
-            arguments: 包含匹配模式和搜索根目录的输入参数
-            context: 工具执行上下文
-
-        Returns:
-            匹配文件路径列表或 "(no matches)"
-        """
-        root = _resolve_path(context.cwd, arguments.root) if arguments.root else context.cwd
-        matches = await _glob(root, arguments.pattern, limit=arguments.limit)
-=======
         root, pattern = _resolve_glob_request(context.cwd, arguments.root, arguments.pattern)
         matches = await _glob(root, pattern, limit=arguments.limit)
->>>>>>> upstream/main
         if not matches:
             return ToolResult(output="(no matches)")
         return ToolResult(output="\n".join(matches))
